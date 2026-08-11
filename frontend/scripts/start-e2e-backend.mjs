@@ -19,6 +19,31 @@ if (reset.status !== 0) {
   process.exit(reset.status ?? 1)
 }
 
+const checkScript = [
+  'import asyncio',
+  'from sqlalchemy import select',
+  'from app.core.database import new_session',
+  'from app.domains.identity.models import User, Organization',
+  'from app.core.security import verify_password',
+  'from app.core.config import settings',
+  'async def main():',
+  '    async with new_session() as db:',
+  '        users = (await db.execute(select(User))).scalars().all()',
+  '        orgs = (await db.execute(select(Organization))).scalars().all()',
+  '        print("SEED_CHECK users=", len(users), "orgs=", len(orgs))',
+  '        for u in users:',
+  '            print("SEED_CHECK user=", u.email, "password_ok=", verify_password(settings.demo_admin_password, u.password_hash))',
+  'asyncio.run(main())',
+].join('\n')
+const check = spawnSync('uv', ['run', 'python', '-c', checkScript], {
+  cwd: backendDir,
+  stdio: 'inherit',
+  shell,
+})
+if (check.status !== 0) {
+  process.exit(check.status ?? 1)
+}
+
 const server = spawn(
   'uv',
   ['run', 'uvicorn', 'app.main:app', '--host', '127.0.0.1', '--port', '8000'],

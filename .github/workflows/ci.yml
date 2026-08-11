@@ -114,6 +114,8 @@ jobs:
         run: npx playwright install --with-deps chromium
       - name: Run Playwright core flow
         working-directory: frontend
+        env:
+          DEBUG: "pw:webserver"
         run: npx playwright test
       - name: Upload Playwright report on failure
         if: failure()
