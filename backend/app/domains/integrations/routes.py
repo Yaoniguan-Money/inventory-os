@@ -13,7 +13,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import settings
 from app.core.database import get_db
-from app.core.errors import AppError
+from app.core.errors import AppError, PermissionDeniedError
 from app.core.permissions import require_scope
 from app.core.security import CurrentUser, authenticate_api_key
 from app.domains.integrations.models import EventLog
@@ -21,6 +21,11 @@ from app.domains.integrations.schemas import IntegrationEventEnvelope, Integrati
 from app.domains.integrations.service import process_integration_event
 
 router = APIRouter(tags=["integrations"])
+
+EVENT_SCOPE = {
+    "inventory.received": "inventory:receive",
+    "inventory.adjusted": "inventory:adjust",
+}
 
 
 @router.post("/integrations/events", response_model=IntegrationEventResult)
@@ -30,6 +35,9 @@ async def receive_external_event(
     db: AsyncSession = Depends(get_db),
     api_key=Depends(authenticate_api_key),
 ) -> IntegrationEventResult:
+    required_scope = EVENT_SCOPE.get(payload.type)
+    if required_scope is not None and required_scope not in (api_key.scopes or []):
+        raise PermissionDeniedError(f"API Key 缺少权限: {required_scope}")
     try:
         status = await process_integration_event(
             db,

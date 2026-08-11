@@ -3,9 +3,11 @@ from __future__ import annotations
 import uuid
 from datetime import datetime
 from decimal import Decimal
-from typing import Any
+from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
+
+MarketProviderName = Literal["mock", "http_json", "rss", "open_er_api"]
 
 
 class MarketQuoteOut(BaseModel):
@@ -37,7 +39,7 @@ class MarketEventOut(BaseModel):
 
 
 class MarketMappingCreate(BaseModel):
-    provider: str = Field(default="mock", max_length=64)
+    provider: MarketProviderName = "open_er_api"
     external_symbol: str = Field(min_length=1, max_length=128)
     region: str = Field(default="DOMESTIC", max_length=24)
     enabled: bool = True

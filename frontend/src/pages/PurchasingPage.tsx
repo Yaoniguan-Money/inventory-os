@@ -32,6 +32,13 @@ interface WorkbenchItem {
     DOMESTIC?: { MARKET_BUY?: MarketQuoteLike; MARKET_SELL?: MarketQuoteLike }
     INTERNATIONAL?: { MARKET_BUY?: MarketQuoteLike; MARKET_SELL?: MarketQuoteLike }
   }
+  purchase_history: Array<{
+    date: string
+    quantity: string
+    unit_cost: string | null
+    reference_id: string | null
+  }>
+  market_events: Array<{ title: string; source: string; published_at: string }>
   suppliers: Array<{ supplier_id: string; name: string }>
   purchase_orders: Array<{ po_id: string; po_no: string; expected_at: string | null; incoming: string }>
 }
@@ -138,6 +145,7 @@ export default function PurchasingPage() {
               <tr className="border-b border-slate-800 text-left text-xs text-slate-500">
                 <th className="px-4 py-2.5">SKU</th>
                 <th className="px-4 py-2.5 text-right">On Hand</th>
+                <th className="px-4 py-2.5 text-right">Reserved</th>
                 <th className="px-4 py-2.5 text-right">Available</th>
                 <th className="px-4 py-2.5 text-right">Incoming</th>
                 <th className="px-4 py-2.5 text-right">7日需求</th>
@@ -158,6 +166,7 @@ export default function PurchasingPage() {
                     </ProductLink>
                   </td>
                   <td className="tabular px-4 py-2.5 text-right">{fmtQty(w.on_hand)}</td>
+                  <td className="tabular px-4 py-2.5 text-right text-amber-300">{fmtQty(w.reserved)}</td>
                   <td className="tabular px-4 py-2.5 text-right">{fmtQty(w.available)}</td>
                   <td className="tabular px-4 py-2.5 text-right text-emerald-300">{fmtQty(w.incoming)}</td>
                   <td className="tabular px-4 py-2.5 text-right">{fmtQty(w.demand_7d)}</td>
@@ -177,7 +186,8 @@ export default function PurchasingPage() {
                           {fmtMoney(w.market_quotes.DOMESTIC.MARKET_BUY.price, w.market_quotes.DOMESTIC.MARKET_BUY.currency)}
                         </div>
                         <div className="text-[10px] text-slate-500">
-                          {w.market_quotes.DOMESTIC.MARKET_BUY.source}
+                          {w.market_quotes.DOMESTIC.MARKET_BUY.source} ·{' '}
+                          {fmtDate(w.market_quotes.DOMESTIC.MARKET_BUY.observed_at)}
                         </div>
                       </div>
                     ) : (
@@ -194,7 +204,8 @@ export default function PurchasingPage() {
                           )}
                         </div>
                         <div className="text-[10px] text-slate-500">
-                          {w.market_quotes.INTERNATIONAL.MARKET_SELL.source}
+                          {w.market_quotes.INTERNATIONAL.MARKET_SELL.source} ·{' '}
+                          {fmtDate(w.market_quotes.INTERNATIONAL.MARKET_SELL.observed_at)}
                         </div>
                       </div>
                     ) : (
@@ -208,6 +219,65 @@ export default function PurchasingPage() {
               ))}
             </tbody>
           </table>
+        )}
+      </Card>
+
+      <Card title="历史采购记录（最近 10 笔）" className="mb-4 p-0">
+        {workbench.isLoading ? (
+          <Spinner />
+        ) : (
+          <table className="w-full text-sm">
+            <thead>
+              <tr className="border-b border-slate-800 text-left text-xs text-slate-500">
+                <th className="px-4 py-2.5">SKU</th>
+                <th className="px-4 py-2.5">入库时间</th>
+                <th className="px-4 py-2.5 text-right">数量</th>
+                <th className="px-4 py-2.5 text-right">单价</th>
+                <th className="px-4 py-2.5">关联单号</th>
+              </tr>
+            </thead>
+            <tbody>
+              {(workbench.data ?? [])
+                .flatMap((w) =>
+                  (w.purchase_history ?? []).map((h) => ({ ...h, sku: w.sku, product_id: w.product_id })),
+                )
+                .map((h, i) => (
+                  <tr key={i} className="border-b border-slate-800/60">
+                    <td className="px-4 py-2.5">
+                      <ProductLink id={h.product_id}>{h.sku}</ProductLink>
+                    </td>
+                    <td className="px-4 py-2.5 text-slate-400">{fmtDate(h.date)}</td>
+                    <td className="tabular px-4 py-2.5 text-right">{fmtQty(h.quantity)}</td>
+                    <td className="tabular px-4 py-2.5 text-right">{fmtMoney(h.unit_cost)}</td>
+                    <td className="px-4 py-2.5 text-slate-400">{h.reference_id ?? '—'}</td>
+                  </tr>
+                ))}
+            </tbody>
+          </table>
+        )}
+      </Card>
+
+      <Card title="行情事件（最新）" className="mb-4 p-0">
+        {workbench.isLoading ? (
+          <Spinner />
+        ) : (
+          <div className="divide-y divide-slate-800/60">
+            {(workbench.data ?? [])
+              .flatMap((w) =>
+                (w.market_events ?? []).map((e) => ({ ...e, sku: w.sku, product_id: w.product_id })),
+              )
+              .map((e, i) => (
+                <div key={i} className="flex items-center justify-between gap-3 px-4 py-2 text-sm">
+                  <div className="min-w-0">
+                    <ProductLink id={e.product_id}>{e.sku}</ProductLink>
+                    <span className="ml-2 text-slate-300">{e.title}</span>
+                  </div>
+                  <div className="shrink-0 text-xs text-slate-500">
+                    {e.source} · {fmtDate(e.published_at)}
+                  </div>
+                </div>
+              ))}
+          </div>
         )}
       </Card>
 

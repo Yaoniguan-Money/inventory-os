@@ -13,10 +13,10 @@ from app.core.audit import record_audit
 from app.core.errors import ConflictError, NotFoundError, ValidationFailureError
 from app.core.events import record_event
 from app.domains.catalog.models import Product
-from app.domains.market.models import MarketQuote
+from app.domains.market.models import MarketEvent, MarketQuote
 from app.domains.orders.models import SalesOrder, SalesOrderLine
 from app.domains.purchasing.models import PurchaseOrder, PurchaseOrderLine, Supplier
-from app.domains.warehouse.models import InventoryBalance, Warehouse
+from app.domains.warehouse.models import InventoryBalance, StockMovement, Warehouse
 from app.domains.warehouse.service import latest_snapshot, receive_stock
 
 
@@ -355,16 +355,56 @@ async def workbench(db: AsyncSession, *, organization_id: str) -> list[dict]:
                     "source": quote.source,
                     "observed_at": quote.observed_at.isoformat(),
                 }
-        balance = (
+        receipts = (
+            await db.execute(
+                select(StockMovement)
+                .where(
+                    StockMovement.organization_id == uuid.UUID(organization_id),
+                    StockMovement.product_id == product.id,
+                    StockMovement.movement_type == "RECEIPT",
+                )
+                .order_by(StockMovement.occurred_at.desc())
+                .limit(10)
+            )
+        ).scalars().all()
+        purchase_history = [
+            {
+                "date": movement.occurred_at.isoformat(),
+                "quantity": str(movement.quantity),
+                "unit_cost": str(movement.unit_cost) if movement.unit_cost is not None else None,
+                "reference_id": movement.reference_id,
+            }
+            for movement in receipts
+        ]
+        market_events = (
+            await db.execute(
+                select(MarketEvent)
+                .where(
+                    MarketEvent.organization_id == uuid.UUID(organization_id),
+                    MarketEvent.product_id == product.id,
+                )
+                .order_by(MarketEvent.published_at.desc())
+                .limit(3)
+            )
+        ).scalars().all()
+        market_events_out = [
+            {
+                "title": event.title,
+                "source": event.source,
+                "published_at": event.published_at.isoformat(),
+            }
+            for event in market_events
+        ]
+        balances = (
             await db.execute(
                 select(InventoryBalance).where(
                     InventoryBalance.organization_id == uuid.UUID(organization_id),
                     InventoryBalance.product_id == product.id,
                 )
             )
-        ).scalar_one_or_none()
-        on_hand = balance.on_hand if balance else Decimal("0")
-        reserved = balance.reserved if balance else Decimal("0")
+        ).scalars().all()
+        on_hand = sum((b.on_hand for b in balances), Decimal("0"))
+        reserved = sum((b.reserved for b in balances), Decimal("0"))
         available = on_hand - reserved
         incoming = await incoming_for_product(db, organization_id=organization_id, product_id=pid)
         demand_lines = (
@@ -375,7 +415,7 @@ async def workbench(db: AsyncSession, *, organization_id: str) -> list[dict]:
                     SalesOrder.organization_id == uuid.UUID(organization_id),
                     SalesOrderLine.product_id == product.id,
                     SalesOrder.status.in_(["CONFIRMED", "PARTIAL"]),
-                    SalesOrderLine.required_at <= horizon,
+                    (SalesOrderLine.required_at <= horizon) | (SalesOrder.required_at <= horizon),
                 )
             )
         ).scalars().all()
@@ -417,6 +457,8 @@ async def workbench(db: AsyncSession, *, organization_id: str) -> list[dict]:
                 "last_purchase_price": last_purchase.price if last_purchase else None,
                 "weighted_avg_cost": avg_cost.price if avg_cost else None,
                 "market_quotes": market_quotes,
+                "purchase_history": purchase_history,
+                "market_events": market_events_out,
                 "suppliers": [
                     {"supplier_id": sid, "name": name} for sid, name in supplier_names.items()
                 ],

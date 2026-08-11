@@ -1,6 +1,7 @@
 from fastapi import APIRouter
 
 from app.domains.catalog.routes import router as catalog_router
+from app.domains.dashboard.routes import router as dashboard_router
 from app.domains.equipment.routes import router as equipment_router
 from app.domains.health.routes import router as health_router
 from app.domains.identity.routes import router as identity_router
@@ -26,3 +27,4 @@ api_router.include_router(market_router, prefix="/api/v1")
 api_router.include_router(equipment_router, prefix="/api/v1")
 api_router.include_router(knowledge_router, prefix="/api/v1")
 api_router.include_router(intelligence_router, prefix="/api/v1")
+api_router.include_router(dashboard_router, prefix="/api/v1")

@@ -17,10 +17,11 @@ test('核心经营链路：登录→商品→订单→确认→交付→风险',
   // 3. 创建订单
   await page.getByRole('link', { name: '订单中心' }).click()
   await page.getByRole('button', { name: '新建订单' }).click()
-  await page.locator('select').nth(0).selectOption({ label: 'C001 · 华东电子科技有限公司' })
-  await page.locator('select').nth(1).selectOption({ label: 'A001 · 精密铝合金板材 6061' })
-  await page.getByPlaceholder('数量 *').fill('200')
-  await page.getByPlaceholder('成交价').fill('116')
+  const dialog = page.getByRole('dialog')
+  await dialog.locator('select').nth(0).selectOption({ label: 'C001 · 华东电子科技有限公司' })
+  await dialog.locator('select').nth(1).selectOption({ label: 'A001 · 精密铝合金板材 6061' })
+  await dialog.getByPlaceholder('数量 *').fill('200')
+  await dialog.getByPlaceholder('成交价').fill('116')
   await page.getByRole('button', { name: '创建草稿' }).click()
   await expect(page.getByText('DRAFT').first()).toBeVisible()
 

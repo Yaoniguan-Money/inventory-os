@@ -10,6 +10,7 @@ from app.domains.intelligence.schemas import (
     ChatRequest,
     ChatResponse,
     ExplainAlertResponse,
+    ForecastRequest,
     ResolveProductRequest,
     ResolveProductResponse,
 )
@@ -42,6 +43,7 @@ async def chat(
         db,
         organization_id=user.organization_id,
         user_role=user.role,
+        scopes=user.scopes,
         query=payload.query,
     )
     return ChatResponse.model_validate(result)
@@ -57,6 +59,7 @@ async def employee_assistant_route(
         db,
         organization_id=user.organization_id,
         user_role=user.role,
+        scopes=user.scopes,
         query=payload.query,
     )
     return ChatResponse.model_validate(result)
@@ -101,15 +104,21 @@ async def forecast_capabilities() -> dict:
 
 
 @router.post("/forecast/price")
-async def forecast_price() -> dict:
-    return await DisabledForecastProvider().forecast_price("", "30d")
+async def forecast_price(payload: ForecastRequest) -> dict:
+    return await DisabledForecastProvider().forecast_price(
+        payload.subject_id, payload.horizon, **payload.params
+    )
 
 
 @router.post("/forecast/demand")
-async def forecast_demand() -> dict:
-    return await DisabledForecastProvider().forecast_demand("", "30d")
+async def forecast_demand(payload: ForecastRequest) -> dict:
+    return await DisabledForecastProvider().forecast_demand(
+        payload.subject_id, payload.horizon, **payload.params
+    )
 
 
 @router.post("/forecast/supply-risk")
-async def forecast_supply_risk() -> dict:
-    return await DisabledForecastProvider().forecast_supply_risk("", "30d")
+async def forecast_supply_risk(payload: ForecastRequest) -> dict:
+    return await DisabledForecastProvider().forecast_supply_risk(
+        payload.subject_id, payload.horizon, **payload.params
+    )

@@ -1,7 +1,7 @@
 import { useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { api } from '../lib/api.ts'
-import { fmtQty } from '../lib/format.ts'
+import { fmtDate, fmtQty } from '../lib/format.ts'
 import {
   Badge,
   Button,
@@ -22,6 +22,11 @@ interface Balance {
   on_hand: string
   reserved: string
   available: string
+  incoming: string
+  default_location_code: string | null
+  health_status: string
+  last_receipt_at: string | null
+  last_shipment_at: string | null
 }
 
 export default function InventoryPage() {
@@ -29,6 +34,7 @@ export default function InventoryPage() {
   const [error, setError] = useState<unknown>(null)
   const [receiveOpen, setReceiveOpen] = useState(false)
   const [adjustOpen, setAdjustOpen] = useState(false)
+  const [movementProduct, setMovementProduct] = useState<{ id: string; sku: string } | null>(null)
   const [form, setForm] = useState({
     product_id: '',
     warehouse_id: '',
@@ -62,6 +68,20 @@ export default function InventoryPage() {
     },
     onError: setError,
   })
+  const movements = useQuery({
+    queryKey: ['inventory', movementProduct?.id, 'movements'],
+    queryFn: () =>
+      api.get<
+        Array<{
+          id: string
+          movement_type: string
+          quantity: string
+          reason: string | null
+          occurred_at: string
+        }>
+      >(`/inventory/${movementProduct!.id}/movements`),
+    enabled: movementProduct !== null,
+  })
 
   return (
     <div>
@@ -92,7 +112,12 @@ export default function InventoryPage() {
                 <th className="px-4 py-2.5 text-right">On Hand</th>
                 <th className="px-4 py-2.5 text-right">Reserved</th>
                 <th className="px-4 py-2.5 text-right">Available</th>
-                <th className="px-4 py-2.5">状态</th>
+                <th className="px-4 py-2.5 text-right">Incoming</th>
+                <th className="px-4 py-2.5">默认库位</th>
+                <th className="px-4 py-2.5">健康状态</th>
+                <th className="px-4 py-2.5">最近入库</th>
+                <th className="px-4 py-2.5">最近出库</th>
+                <th className="px-4 py-2.5">流水</th>
               </tr>
             </thead>
             <tbody>
@@ -107,10 +132,23 @@ export default function InventoryPage() {
                   <td className="tabular px-4 py-2.5 text-right text-slate-200">{fmtQty(b.on_hand)}</td>
                   <td className="tabular px-4 py-2.5 text-right text-amber-300">{fmtQty(b.reserved)}</td>
                   <td className="tabular px-4 py-2.5 text-right text-sky-300">{fmtQty(b.available)}</td>
+                  <td className="tabular px-4 py-2.5 text-right text-emerald-300">{fmtQty(b.incoming)}</td>
+                  <td className="px-4 py-2.5 text-slate-400">{b.default_location_code ?? '—'}</td>
                   <td className="px-4 py-2.5">
-                    <Badge tone={Number(b.available) <= 0 ? 'red' : 'green'}>
-                      {Number(b.available) <= 0 ? '缺货' : '正常'}
+                    <Badge tone={b.health_status === 'HIGH' ? 'red' : b.health_status === 'WARN' ? 'amber' : 'green'}>
+                      {b.health_status}
                     </Badge>
+                  </td>
+                  <td className="px-4 py-2.5 text-slate-400">{fmtDate(b.last_receipt_at)}</td>
+                  <td className="px-4 py-2.5 text-slate-400">{fmtDate(b.last_shipment_at)}</td>
+                  <td className="px-4 py-2.5">
+                    <Button
+                      variant="ghost"
+                      className="text-xs"
+                      onClick={() => setMovementProduct({ id: b.product_id, sku: b.sku })}
+                    >
+                      查看流水
+                    </Button>
                   </td>
                 </tr>
               ))}
@@ -137,6 +175,41 @@ export default function InventoryPage() {
           }
           busy={mutation.isPending}
         />
+      </Modal>
+      <Modal
+        open={movementProduct !== null}
+        onClose={() => setMovementProduct(null)}
+        title={`库存流水 · ${movementProduct?.sku ?? ''}`}
+        wide
+      >
+        {movements.isLoading ? (
+          <Spinner />
+        ) : (
+          <table className="w-full text-sm">
+            <thead>
+              <tr className="border-b border-slate-800 text-left text-xs text-slate-500">
+                <th className="py-2">类型</th>
+                <th className="py-2 text-right">数量</th>
+                <th className="py-2">原因</th>
+                <th className="py-2">时间</th>
+              </tr>
+            </thead>
+            <tbody>
+              {(movements.data ?? []).map((m) => (
+                <tr key={m.id} className="border-t border-slate-800/60">
+                  <td className="py-2">
+                    <Badge tone={m.movement_type === 'RECEIPT' ? 'green' : 'amber'}>
+                      {m.movement_type}
+                    </Badge>
+                  </td>
+                  <td className="tabular py-2 text-right">{fmtQty(m.quantity)}</td>
+                  <td className="py-2 text-slate-400">{m.reason ?? '—'}</td>
+                  <td className="py-2 text-slate-400">{fmtDate(m.occurred_at)}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        )}
       </Modal>
       <Modal open={adjustOpen} onClose={() => setAdjustOpen(false)} title="手工调整（正数加、负数减）">
         <StockForm

@@ -103,6 +103,8 @@ async def test_price_pressure_alert_uses_market_quote(
 
 
 async def test_market_provider_boundaries_exist() -> None:
+    import pytest
+
     from app.providers.market import (
         GenericHttpJsonProvider,
         GenericRssProvider,
@@ -119,6 +121,23 @@ async def test_market_provider_boundaries_exist() -> None:
     assert GenericHttpJsonProvider().name == "http_json"
     assert GenericRssProvider().name == "rss"
     assert OpenErApiFxProvider().name == "open_er_api"
+    with pytest.raises(ValueError):
+        get_market_provider("open_er_ap1")
+
+
+async def test_unknown_market_provider_rejected(
+    client: httpx.AsyncClient, org_owner_headers: dict[str, str]
+) -> None:
+    product = await client.post(
+        "/api/v1/products", headers=org_owner_headers, json={"sku": "P-BAD", "name": "坏映射"}
+    )
+    assert product.status_code == 201
+    resp = await client.post(
+        f"/api/v1/products/{product.json()['id']}/market-mappings",
+        headers=org_owner_headers,
+        json={"provider": "open_er_ap1", "external_symbol": "USD", "region": "INTERNATIONAL"},
+    )
+    assert resp.status_code == 422
 
 
 async def test_refresh_uses_mapping_provider(

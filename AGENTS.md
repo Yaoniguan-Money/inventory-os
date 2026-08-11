@@ -18,6 +18,17 @@
 - 每个阶段完成后更新 `docs/PROGRESS.md`。
 - 仓库级 Skills 位于 `.agents/skills/`，按任务调用，不要一次性全部塞进上下文。
 
+## 最高优先级工程约束（不得降级）
+
+- 不得以任何理由自行进行功能降级、范围缩水、架构降级或验收降级；不得把“必须”项改写成“可选/后续/TODO”后宣称完成。
+- 不得用注释、空函数、hard-coded response、假成功状态代替核心实现；不得对已有功能 silent fallback 成低能力方案。
+- 外部依赖缺失时：保留正式接口/数据模型/Provider 边界，使用**明确标记**的 Mock/Stub，且不得 Mock 核心业务逻辑；在 `docs/PROGRESS.md` 的 BLOCKERS 记录恢复条件。
+- 未知配置（如未知 Market Provider 名称）必须显式报错（422/配置错误），禁止悄悄退回默认 Provider。
+- Definition of Done 是完成合同：未完成项不得通过改文档、降测试、删条目或改措辞变成已完成。
+- 新增业务规则必须补测试；安全/隔离相关修复必须补攻击型回归测试。
+- 多仓库语义：同一 SKU 跨仓库时，查询/健康/工作台必须按 SKU 聚合，不得因多结果异常或随机取一行。
+- AI Tool 必须遵循调用者 scope；API Key 的 scopes 必须真正执行，不能只存不查。
+
 ## Agent skills
 
 ### Issue tracker

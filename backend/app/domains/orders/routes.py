@@ -1,8 +1,9 @@
 from __future__ import annotations
 
 import uuid
+from datetime import UTC, datetime
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, Query
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -10,7 +11,7 @@ from app.core.database import get_db
 from app.core.errors import ConflictError
 from app.core.permissions import require_scope
 from app.core.security import CurrentUser
-from app.domains.orders.models import Customer
+from app.domains.orders.models import Customer, SalesOrder, SalesOrderLine
 from app.domains.orders.schemas import (
     CustomerCreate,
     CustomerOut,
@@ -25,7 +26,6 @@ from app.domains.orders.service import (
     create_sales_order,
     fulfill_order,
     get_order,
-    list_customer_orders,
 )
 
 router = APIRouter(tags=["orders"])
@@ -69,10 +69,38 @@ async def create_customer(
 
 @router.get("/orders", response_model=list[SalesOrderOut])
 async def list_orders(
+    status: str | None = Query(default=None, max_length=24),
+    customer_id: str | None = Query(default=None),
+    product_id: str | None = Query(default=None),
+    overdue: bool = Query(default=False),
+    due_from: datetime | None = Query(default=None),
+    due_to: datetime | None = Query(default=None),
     db: AsyncSession = Depends(get_db),
     user: CurrentUser = Depends(require_scope("orders:read")),
 ) -> list[SalesOrderOut]:
-    orders = await list_customer_orders(db, organization_id=user.organization_id)
+    stmt = select(SalesOrder).where(
+        SalesOrder.organization_id == uuid.UUID(user.organization_id)
+    )
+    if status:
+        stmt = stmt.where(SalesOrder.status == status)
+    if customer_id:
+        stmt = stmt.where(SalesOrder.customer_id == uuid.UUID(customer_id))
+    if product_id:
+        stmt = stmt.join(
+            SalesOrderLine, SalesOrderLine.sales_order_id == SalesOrder.id
+        ).where(SalesOrderLine.product_id == uuid.UUID(product_id))
+    if overdue:
+        stmt = stmt.where(
+            SalesOrder.status.in_(["CONFIRMED", "PARTIAL"]),
+            SalesOrder.required_at < datetime.now(UTC),
+        )
+    if due_from:
+        stmt = stmt.where(SalesOrder.required_at >= due_from)
+    if due_to:
+        stmt = stmt.where(SalesOrder.required_at <= due_to)
+    orders = (
+        await db.execute(stmt.order_by(SalesOrder.required_at, SalesOrder.ordered_at.desc()))
+    ).scalars().all()
     return [SalesOrderOut.model_validate(await build_order_out(db, user.organization_id, o)) for o in orders]
 
 

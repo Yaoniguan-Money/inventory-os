@@ -125,7 +125,7 @@ async def recalculate_product(
     horizon = now + timedelta(days=settings.health_horizon_days)
     evaluated: set[str] = set()
 
-    balance = (
+    balances = (
         await db.execute(
             select(InventoryBalance)
             .where(
@@ -133,9 +133,9 @@ async def recalculate_product(
                 InventoryBalance.product_id == product.id,
             )
         )
-    ).scalar_one_or_none()
-    on_hand = balance.on_hand if balance else Decimal("0")
-    reserved = balance.reserved if balance else Decimal("0")
+    ).scalars().all()
+    on_hand = sum((b.on_hand for b in balances), Decimal("0"))
+    reserved = sum((b.reserved for b in balances), Decimal("0"))
     available = on_hand - reserved
 
     # 1) STOCKOUT_RISK: demand in horizon > available + incoming before due.
@@ -372,13 +372,8 @@ async def recalculate_product(
 
     # 7) DATA_ANOMALY: invariant checks on balances/lots.
     anomalies: list[str] = []
-    if (
-        balance is not None
-        and (
-            balance.on_hand < 0
-            or balance.reserved < 0
-            or balance.reserved > balance.on_hand
-        )
+    if any(
+        b.on_hand < 0 or b.reserved < 0 or b.reserved > b.on_hand for b in balances
     ):
         anomalies.append("库存账户违反不变式")
     for lot in lots:

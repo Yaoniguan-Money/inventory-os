@@ -53,6 +53,9 @@ class SalesOrderLineOut(BaseModel):
     remaining_qty: Decimal
     unit_sell_price: Decimal | None
     required_at: datetime | None
+    available: Decimal | None = None
+    incoming: Decimal | None = None
+    fulfillment_risk: bool = False
 
 
 class SalesOrderOut(BaseModel):

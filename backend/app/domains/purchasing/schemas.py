@@ -86,5 +86,7 @@ class WorkbenchItem(BaseModel):
     last_purchase_price: Decimal | None
     weighted_avg_cost: Decimal | None
     market_quotes: dict[str, dict] = Field(default_factory=dict)
+    purchase_history: list[dict] = Field(default_factory=list)
+    market_events: list[dict] = Field(default_factory=list)
     suppliers: list[dict]
     purchase_orders: list[dict]

@@ -66,12 +66,17 @@ class InventoryBalanceOut(BaseModel):
     product_id: uuid.UUID
     sku: str
     name: str
-    warehouse_id: uuid.UUID
+    warehouse_id: uuid.UUID | None
     warehouse_code: str
     on_hand: Decimal
     reserved: Decimal
     available: Decimal
     version: int
+    default_location_code: str | None = None
+    incoming: Decimal = Decimal("0")
+    health_status: str = "NORMAL"
+    last_receipt_at: datetime | None = None
+    last_shipment_at: datetime | None = None
 
 
 class InventoryLotOut(BaseModel):
@@ -86,6 +91,7 @@ class InventoryLotOut(BaseModel):
     unit_cost: Decimal | None
     received_at: datetime
     expires_at: datetime | None
+    location_code: str | None = None
 
 
 class StockMovementOut(BaseModel):

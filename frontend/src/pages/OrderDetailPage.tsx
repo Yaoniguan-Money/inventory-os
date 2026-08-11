@@ -4,6 +4,7 @@ import { useParams } from 'react-router-dom'
 import { api } from '../lib/api.ts'
 import { fmtDate, fmtMoney, fmtQty } from '../lib/format.ts'
 import {
+  Badge,
   Button,
   Card,
   ErrorNote,
@@ -68,6 +69,9 @@ export default function OrderDetailPage() {
               <th className="py-2 text-right">已交付</th>
               <th className="py-2 text-right">剩余</th>
               <th className="py-2 text-right">成交价</th>
+              <th className="py-2 text-right">当前可用</th>
+              <th className="py-2 text-right">在途</th>
+              <th className="py-2">履约风险</th>
               <th className="py-2">操作</th>
             </tr>
           </thead>
@@ -82,6 +86,11 @@ export default function OrderDetailPage() {
                 <td className="tabular py-2 text-right">{fmtQty(String(line.delivered_qty))}</td>
                 <td className="tabular py-2 text-right">{fmtQty(String(line.remaining_qty))}</td>
                 <td className="tabular py-2 text-right">{fmtMoney(String(line.unit_sell_price ?? ''))}</td>
+                <td className="tabular py-2 text-right">{fmtQty(String(line.available ?? ''))}</td>
+                <td className="tabular py-2 text-right">{fmtQty(String(line.incoming ?? ''))}</td>
+                <td className="py-2">
+                  {line.fulfillment_risk ? <Badge tone="red">风险</Badge> : <Badge tone="green">正常</Badge>}
+                </td>
                 <td className="py-2">
                   {['CONFIRMED', 'PARTIAL'].includes(String(data.status)) && (
                     <Button

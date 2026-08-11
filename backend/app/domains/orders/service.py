@@ -23,7 +23,13 @@ from app.domains.orders.models import (
 )
 from app.domains.pricing.service import record_price_snapshot
 from app.domains.purchasing.models import PurchaseOrder, PurchaseOrderLine
-from app.domains.warehouse.models import InventoryLot, StockMovement, Warehouse
+from app.domains.purchasing.service import incoming_for_product
+from app.domains.warehouse.models import (
+    InventoryBalance,
+    InventoryLot,
+    StockMovement,
+    Warehouse,
+)
 from app.domains.warehouse.service import get_balance_locked, latest_snapshot
 
 
@@ -48,7 +54,14 @@ async def get_order(
     return order
 
 
-def order_out(order: SalesOrder, customer: Customer, lines: list[SalesOrderLine], products: dict[str, Product]) -> dict:
+def order_out(
+    order: SalesOrder,
+    customer: Customer,
+    lines: list[SalesOrderLine],
+    products: dict[str, Product],
+    line_meta: dict[str, dict] | None = None,
+) -> dict:
+    line_meta = line_meta or {}
     return {
         "id": order.id,
         "order_no": order.order_no,
@@ -72,6 +85,11 @@ def order_out(order: SalesOrder, customer: Customer, lines: list[SalesOrderLine]
                 "remaining_qty": line.ordered_qty - line.delivered_qty,
                 "unit_sell_price": line.unit_sell_price,
                 "required_at": line.required_at,
+                "available": line_meta.get(str(line.id), {}).get("available"),
+                "incoming": line_meta.get(str(line.id), {}).get("incoming"),
+                "fulfillment_risk": line_meta.get(str(line.id), {}).get(
+                    "fulfillment_risk", False
+                ),
             }
             for line in lines
         ],
@@ -94,7 +112,30 @@ async def build_order_out(db: AsyncSession, organization_id: str, order: SalesOr
             await db.execute(select(Product).where(Product.id.in_([uuid.UUID(x) for x in product_ids])))
         ).scalars()
     }
-    return order_out(order, customer, list(lines), products)
+    line_meta: dict[str, dict] = {}
+    for line in lines:
+        balances = (
+            await db.execute(
+                select(InventoryBalance).where(
+                    InventoryBalance.organization_id == uuid.UUID(organization_id),
+                    InventoryBalance.product_id == line.product_id,
+                )
+            )
+        ).scalars().all()
+        on_hand = sum((b.on_hand for b in balances), Decimal("0"))
+        reserved = sum((b.reserved for b in balances), Decimal("0"))
+        available = on_hand - reserved
+        deadline = line.required_at or order.required_at
+        incoming = await incoming_for_product(
+            db, organization_id=organization_id, product_id=str(line.product_id), before=deadline
+        )
+        remaining = line.ordered_qty - line.delivered_qty
+        line_meta[str(line.id)] = {
+            "available": available,
+            "incoming": incoming,
+            "fulfillment_risk": remaining > available + incoming,
+        }
+    return order_out(order, customer, list(lines), products, line_meta)
 
 
 async def create_sales_order(

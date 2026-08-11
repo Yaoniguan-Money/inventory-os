@@ -179,6 +179,22 @@
 - Market Provider 按映射选择并默认接入真实国际汇率参考源（open_er_api，无 Key）；前端映射表单可选 Provider。
 - 当前后端测试 60 项全通过（含 9 项新增回归），前端 5 项测试 + E2E 通过。
 
+## 第三轮审计修复（多仓库 / 权限 / 契约 / 页面规格）
+
+- 多仓库聚合：库存健康、采购工作台、`GET /inventory/{product_id}` 均按 SKU 聚合（On Hand/Reserved/Available 跨仓库求和），不再多结果异常或随机取一行。
+- 工作台 7 日需求与健康引擎口径一致：`line.required_at OR order.required_at`。
+- AI 员工助手 Tool 级 scope：成本类字段仅 `pricing:cost:read` 可见，SALES 无法通过 AI 问出成本。
+- API Key scope 真正执行：事件入口按事件类型校验 scope，缺失返回 403。
+- Forecast HTTP 契约补齐：`subject_id` / `horizon` / `params` 请求体已定义并回显，Provider 仍返回 disabled。
+- Market Provider 注册表化：未知 Provider 直接 422/报错，禁止 silent fallback 到 Mock。
+- 采购工作台：Reserved、历史采购数量/价格时间序列、行情事件、行情更新时间全部上屏。
+- 商品旗舰页：状态/条码/默认仓库/默认库位/健康状态头部字段，批次表含位置与入库时间。
+- 仓库中心：Incoming、默认库位、健康状态、最近入库/出库、查看流水（movements 弹窗）。
+- 订单中心：客户/商品/逾期/交付期限过滤；订单详情每 SKU 显示当前可用、在途、履约风险。
+- Dashboard：新增聚合接口 `/api/v1/dashboard`，正确展示库存金额（On Hand×平均成本）、未来 7 日到期订单、履约风险订单、7 日订单压力、即将交付订单（按交付日期排序）、市场价格异常。
+- AGENTS.md 补入“最高优先级工程约束”（不得功能降级/silent fallback/DoD 降级、多仓库聚合、Tool/API Key scope 执行）。
+- 当前后端测试 71 项全通过（本轮新增 11 项），前端构建/测试与 E2E 待最终验证。
+
 ## Definition of Done 核对
 
 - [x] private repo 创建：https://github.com/Yaoniguan-Money/inventory-os
@@ -202,7 +218,7 @@
 - [x] 采购中心统一视图（库存/在途/需求/历史采购价/供应商/行情）
 - [x] ForecastProvider / capability / API 存在且 disabled；UI 无伪预测
 - [x] 未实现面向客户客服助手
-- [x] 权限测试、核心库存/订单测试通过（pytest 60 项，含跨租户/权限绕过/批次边界/成本快照回归）
+- [x] 权限测试、核心库存/订单测试通过（pytest 71 项，含跨租户/权限绕过/批次边界/成本快照/多仓库/API Key scope/AI Tool scope 回归）
 - [x] Playwright 核心链路通过
 - [x] CI 工作流已配置；本地等价检查（ruff/mypy/pytest/build/typecheck/lint/test）全绿，推送后由 GitHub Actions 验证
 - [x] docs/PROGRESS.md 处于最终完成状态

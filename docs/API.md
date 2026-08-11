@@ -112,6 +112,14 @@ POST /api/v1/forecast/demand
 POST /api/v1/forecast/supply-risk
 ```
 
+请求体（已留好契约）：
+
+```json
+{"subject_id": "A001", "horizon": "30d", "params": {}}
+```
+
+返回 `enabled=false` 且回显 `subject_id` / `horizon`，不生成预测数据。
+
 ## AI / Integrations / Events
 
 ```text
@@ -127,6 +135,25 @@ DELETE /api/v1/integrations/api-keys/{id}
 GET  /api/v1/events/stream
 GET  /api/v1/events
 ```
+
+## Dashboard
+
+```text
+GET /api/v1/dashboard
+```
+
+返回：库存金额（按移动平均成本）、On Hand/Reserved、SKU 数、未来 7 日到期订单数、履约风险订单数、健康分、7 日订单压力、即将交付订单、市场价格异常、最新事件。
+
+## API Key scopes
+
+`POST /api/v1/integrations/events` 会按事件类型校验 Key scope：
+
+```text
+inventory.received -> inventory:receive
+inventory.adjusted  -> inventory:adjust
+```
+
+缺少对应 scope 返回 403；未知 Provider 名称在创建映射时返回 422。
 
 > 请求/响应 schema 见 FastAPI `/docs`（OpenAPI）。当前实现以真实路由为准。
 

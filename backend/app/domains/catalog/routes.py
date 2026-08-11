@@ -14,12 +14,19 @@ from app.core.security import CurrentUser
 from app.domains.catalog.models import Product
 from app.domains.catalog.schemas import ProductCreate, ProductOut, ProductUpdate
 from app.domains.catalog.service import create_product, get_product, update_product
+from app.domains.health.service import product_health
 from app.domains.integrations.models import EventLog
 from app.domains.market.models import MarketQuote
 from app.domains.orders.models import SalesOrder, SalesOrderLine
 from app.domains.pricing.service import get_prices
 from app.domains.purchasing.service import incoming_for_product
-from app.domains.warehouse.models import InventoryBalance, InventoryLot, StockMovement
+from app.domains.warehouse.models import (
+    InventoryBalance,
+    InventoryLot,
+    Location,
+    StockMovement,
+    Warehouse,
+)
 
 router = APIRouter(tags=["catalog"])
 
@@ -243,8 +250,25 @@ async def product_overview(
             .limit(20)
         )
     ).scalars().all()
+    default_warehouse_code: str | None = None
+    default_location_code: str | None = None
+    if product.default_warehouse_id:
+        warehouse = await db.get(Warehouse, product.default_warehouse_id)
+        default_warehouse_code = warehouse.code if warehouse else None
+    if product.default_location_id:
+        location = await db.get(Location, product.default_location_id)
+        default_location_code = location.code if location else None
+    health = await product_health(
+        db, organization_id=user.organization_id, product_id=product_id
+    )
+    health_status = (
+        "健康" if health["score"] >= 90 else "关注" if health["score"] >= 70 else "高风险"
+    )
     return {
         "product": ProductOut.model_validate(product).model_dump(),
+        "default_warehouse_code": default_warehouse_code,
+        "default_location_code": default_location_code,
+        "health": {"score": health["score"], "status": health_status},
         "inventory": {
             "on_hand": on_hand,
             "reserved": reserved,

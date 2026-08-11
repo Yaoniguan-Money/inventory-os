@@ -10,6 +10,12 @@ class ChatRequest(BaseModel):
     query: str = Field(min_length=1, max_length=1000)
 
 
+class ForecastRequest(BaseModel):
+    subject_id: str = Field(default="", max_length=64)
+    horizon: str = Field(default="30d", pattern="^[0-9]+[dwm]$")
+    params: dict[str, Any] = Field(default_factory=dict)
+
+
 class CitationOut(BaseModel):
     document_id: uuid.UUID
     document_title: str

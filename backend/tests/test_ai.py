@@ -130,10 +130,15 @@ async def test_forecast_disabled_by_default(client: httpx.AsyncClient) -> None:
     capabilities = await client.get("/api/v1/forecast/capabilities")
     assert capabilities.status_code == 200
     assert capabilities.json()["enabled"] is False
-    price = await client.post("/api/v1/forecast/price")
+    price = await client.post(
+        "/api/v1/forecast/price",
+        json={"subject_id": "A001", "horizon": "14d", "params": {"window": 30}},
+    )
     assert price.status_code == 200
     assert price.json()["enabled"] is False
     assert price.json()["points"] == []
+    assert price.json()["subject_id"] == "A001"
+    assert price.json()["horizon"] == "14d"
 
 
 async def test_ai_capabilities_exposed(

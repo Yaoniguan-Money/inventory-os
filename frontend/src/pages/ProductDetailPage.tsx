@@ -25,8 +25,12 @@ interface Overview {
     category: string | null
     status: string
     unit: string
+    barcode: string | null
     target_sell_price: string | null
   }
+  default_warehouse_code: string | null
+  default_location_code: string | null
+  health: { score: number; status: string }
   inventory: {
     on_hand: string
     reserved: string
@@ -175,6 +179,22 @@ export default function ProductDetailPage() {
           </div>
         }
       />
+
+      <div className="mb-4 flex flex-wrap items-center gap-2 text-xs">
+        <Badge tone={statusTone(data.product.status)}>状态 {data.product.status}</Badge>
+        <span className="rounded-full border border-slate-700 px-2 py-0.5 text-slate-400">
+          条码 {data.product.barcode ?? '—'}
+        </span>
+        <span className="rounded-full border border-slate-700 px-2 py-0.5 text-slate-400">
+          默认仓库 {data.default_warehouse_code ?? '—'}
+        </span>
+        <span className="rounded-full border border-slate-700 px-2 py-0.5 text-slate-400">
+          默认库位 {data.default_location_code ?? '—'}
+        </span>
+        <Badge tone={data.health.score < 70 ? 'red' : data.health.score < 90 ? 'amber' : 'green'}>
+          健康状态 {data.health.status}（{data.health.score}）
+        </Badge>
+      </div>
 
       <ErrorNote error={error} />
 
@@ -353,8 +373,10 @@ export default function ProductDetailPage() {
             <thead>
               <tr className="text-left text-xs text-slate-500">
                 <th className="py-2">批次</th>
+                <th className="py-2">位置</th>
                 <th className="py-2 text-right">余量</th>
                 <th className="py-2 text-right">单位成本</th>
+                <th className="py-2">入库时间</th>
                 <th className="py-2">有效期</th>
               </tr>
             </thead>
@@ -362,8 +384,10 @@ export default function ProductDetailPage() {
               {(lots.data ?? []).map((lot) => (
                 <tr key={String(lot.id)} className="border-t border-slate-800/60">
                   <td className="py-2 text-slate-300">{String(lot.lot_code)}</td>
+                  <td className="py-2 text-slate-400">{String(lot.location_code ?? '—')}</td>
                   <td className="tabular py-2 text-right">{fmtQty(String(lot.quantity_remaining))}</td>
                   <td className="tabular py-2 text-right">{fmtMoney(String(lot.unit_cost ?? ''))}</td>
+                  <td className="py-2 text-slate-400">{fmtDate(String(lot.received_at ?? ''))}</td>
                   <td className="py-2 text-slate-400">
                     {lot.expires_at ? (
                       <span className="text-amber-300">{fmtDate(String(lot.expires_at))}</span>

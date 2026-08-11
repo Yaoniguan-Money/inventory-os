@@ -39,10 +39,25 @@ export default function OrdersPage() {
   const [createOpen, setCreateOpen] = useState(false)
   const [error, setError] = useState<unknown>(null)
   const [filter, setFilter] = useState('')
+  const [customerId, setCustomerId] = useState('')
+  const [productId, setProductId] = useState('')
+  const [overdue, setOverdue] = useState(false)
+  const [dueFrom, setDueFrom] = useState('')
+  const [dueTo, setDueTo] = useState('')
 
   const orders = useQuery({
-    queryKey: ['orders'],
-    queryFn: () => api.get<Order[]>('/orders'),
+    queryKey: ['orders', filter, customerId, productId, overdue, dueFrom, dueTo],
+    queryFn: () => {
+      const params = new URLSearchParams()
+      if (filter) params.set('status', filter)
+      if (customerId) params.set('customer_id', customerId)
+      if (productId) params.set('product_id', productId)
+      if (overdue) params.set('overdue', 'true')
+      if (dueFrom) params.set('due_from', new Date(dueFrom).toISOString())
+      if (dueTo) params.set('due_to', new Date(dueTo).toISOString())
+      const qs = params.toString()
+      return api.get<Order[]>(`/orders${qs ? `?${qs}` : ''}`)
+    },
   })
   const customers = useQuery({
     queryKey: ['customers'],
@@ -93,10 +108,6 @@ export default function OrdersPage() {
     onError: setError,
   })
 
-  const visible = orders.data?.filter(
-    (o) => !filter || o.status === filter,
-  )
-
   return (
     <div>
       <PageHeader
@@ -110,22 +121,71 @@ export default function OrdersPage() {
       />
       <ErrorNote error={error} />
       <Card className="p-0">
-        <div className="flex gap-2 border-b border-slate-800 p-3">
-          {['', 'DRAFT', 'CONFIRMED', 'PARTIAL', 'FULFILLED', 'CANCELLED'].map((s) => (
-            <button
-              key={s}
-              onClick={() => setFilter(s)}
-              className={`rounded-full px-3 py-1 text-xs ${
-                filter === s ? 'bg-sky-500/20 text-sky-300' : 'text-slate-400 hover:bg-slate-800'
-              }`}
+        <div className="space-y-2 border-b border-slate-800 p-3">
+          <div className="flex flex-wrap gap-2">
+            {['', 'DRAFT', 'CONFIRMED', 'PARTIAL', 'FULFILLED', 'CANCELLED'].map((s) => (
+              <button
+                key={s}
+                onClick={() => setFilter(s)}
+                className={`rounded-full px-3 py-1 text-xs ${
+                  filter === s ? 'bg-sky-500/20 text-sky-300' : 'text-slate-400 hover:bg-slate-800'
+                }`}
+              >
+                {s || '全部'}
+              </button>
+            ))}
+          </div>
+          <div className="flex flex-wrap items-center gap-2 text-xs">
+            <select
+              value={customerId}
+              onChange={(e) => setCustomerId(e.target.value)}
+              className="rounded-lg border border-slate-700 bg-slate-800/70 px-2 py-1.5 text-xs outline-none"
             >
-              {s || '全部'}
-            </button>
-          ))}
+              <option value="">全部客户</option>
+              {customers.data?.map((c) => (
+                <option key={c.id} value={c.id}>
+                  {c.code} · {c.name}
+                </option>
+              ))}
+            </select>
+            <select
+              value={productId}
+              onChange={(e) => setProductId(e.target.value)}
+              className="rounded-lg border border-slate-700 bg-slate-800/70 px-2 py-1.5 text-xs outline-none"
+            >
+              <option value="">全部商品</option>
+              {products.data?.map((p) => (
+                <option key={p.id} value={p.id}>
+                  {p.sku} · {p.name}
+                </option>
+              ))}
+            </select>
+            <label className="flex items-center gap-1 text-slate-400">
+              <input
+                type="checkbox"
+                checked={overdue}
+                onChange={(e) => setOverdue(e.target.checked)}
+              />
+              仅看逾期
+            </label>
+            <input
+              type="date"
+              value={dueFrom}
+              onChange={(e) => setDueFrom(e.target.value)}
+              className="rounded-lg border border-slate-700 bg-slate-800/70 px-2 py-1.5 text-xs outline-none"
+            />
+            <span className="text-slate-500">至</span>
+            <input
+              type="date"
+              value={dueTo}
+              onChange={(e) => setDueTo(e.target.value)}
+              className="rounded-lg border border-slate-700 bg-slate-800/70 px-2 py-1.5 text-xs outline-none"
+            />
+          </div>
         </div>
         {orders.isLoading ? (
           <Spinner />
-        ) : !visible?.length ? (
+        ) : !orders.data?.length ? (
           <EmptyState text="暂无订单" />
         ) : (
           <table className="w-full text-sm">
@@ -142,7 +202,7 @@ export default function OrdersPage() {
               </tr>
             </thead>
             <tbody>
-              {visible.map((o) => (
+              {orders.data.map((o) => (
                 <tr key={o.id} className="border-b border-slate-800/60 hover:bg-slate-800/30">
                   <td className="px-4 py-2.5">
                     <OrderLink id={o.id}>{o.order_no}</OrderLink>

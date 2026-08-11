@@ -12,6 +12,8 @@ from app.core.errors import ConflictError, NotFoundError
 from app.core.permissions import require_scope
 from app.core.security import CurrentUser
 from app.domains.catalog.models import Product
+from app.domains.health.models import InventoryAlert
+from app.domains.purchasing.service import incoming_for_product
 from app.domains.warehouse.models import InventoryBalance, InventoryLot, Location, StockMovement, Warehouse
 from app.domains.warehouse.schemas import (
     AdjustRequest,
@@ -103,18 +105,85 @@ async def create_location(
     return LocationOut.model_validate(location)
 
 
-def _balance_out(balance: InventoryBalance, product: Product, warehouse: Warehouse) -> InventoryBalanceOut:
-    return InventoryBalanceOut(
-        product_id=balance.product_id,
-        sku=product.sku,
-        name=product.name,
-        warehouse_id=balance.warehouse_id,
-        warehouse_code=warehouse.code,
-        on_hand=balance.on_hand,
-        reserved=balance.reserved,
-        available=balance.on_hand - balance.reserved,
-        version=balance.version,
+def _balance_out(
+    balance: InventoryBalance,
+    product: Product,
+    warehouse: Warehouse,
+    extras: dict | None = None,
+) -> InventoryBalanceOut:
+    payload = {
+        "product_id": balance.product_id,
+        "sku": product.sku,
+        "name": product.name,
+        "warehouse_id": balance.warehouse_id,
+        "warehouse_code": warehouse.code,
+        "on_hand": balance.on_hand,
+        "reserved": balance.reserved,
+        "available": balance.on_hand - balance.reserved,
+        "version": balance.version,
+    }
+    payload.update(extras or {})
+    return InventoryBalanceOut(**payload)
+
+
+async def _inventory_extras(
+    db: AsyncSession, *, organization_id: str, product: Product
+) -> dict:
+    incoming = await incoming_for_product(
+        db, organization_id=organization_id, product_id=str(product.id)
     )
+    default_location_code: str | None = None
+    if product.default_location_id:
+        location = await db.get(Location, product.default_location_id)
+        default_location_code = location.code if location else None
+    alerts = (
+        await db.execute(
+            select(InventoryAlert).where(
+                InventoryAlert.organization_id == uuid.UUID(organization_id),
+                InventoryAlert.product_id == product.id,
+                InventoryAlert.status == "OPEN",
+            )
+        )
+    ).scalars().all()
+    if alerts:
+        health_status = (
+            "HIGH"
+            if any(a.severity in ("CRITICAL", "HIGH") for a in alerts)
+            else "WARN"
+        )
+    else:
+        health_status = "NORMAL"
+    last_receipt = (
+        await db.execute(
+            select(StockMovement)
+            .where(
+                StockMovement.organization_id == uuid.UUID(organization_id),
+                StockMovement.product_id == product.id,
+                StockMovement.movement_type == "RECEIPT",
+            )
+            .order_by(StockMovement.occurred_at.desc())
+            .limit(1)
+        )
+    ).scalar_one_or_none()
+    last_shipment = (
+        await db.execute(
+            select(StockMovement)
+            .where(
+                StockMovement.organization_id == uuid.UUID(organization_id),
+                StockMovement.product_id == product.id,
+                StockMovement.movement_type == "SHIPMENT",
+            )
+            .order_by(StockMovement.occurred_at.desc())
+            .limit(1)
+        )
+    ).scalar_one_or_none()
+    return {
+        "default_location_code": default_location_code,
+        "incoming": incoming,
+        "health_status": health_status,
+        "last_receipt_at": last_receipt.occurred_at if last_receipt else None,
+        "last_shipment_at": last_shipment.occurred_at if last_shipment else None,
+    }
 
 
 @router.get("/inventory", response_model=list[InventoryBalanceOut])
@@ -131,7 +200,17 @@ async def list_inventory(
             .order_by(Product.sku, Warehouse.code)
         )
     ).all()
-    return [_balance_out(balance, product, warehouse) for balance, product, warehouse in rows]
+    outputs: list[InventoryBalanceOut] = []
+    seen_products: set[str] = set()
+    for balance, product, warehouse in rows:
+        extras = {}
+        if str(product.id) not in seen_products:
+            extras = await _inventory_extras(
+                db, organization_id=user.organization_id, product=product
+            )
+            seen_products.add(str(product.id))
+        outputs.append(_balance_out(balance, product, warehouse, extras))
+    return outputs
 
 
 @router.get("/inventory/{product_id}", response_model=InventoryBalanceOut)
@@ -140,21 +219,33 @@ async def get_inventory(
     db: AsyncSession = Depends(get_db),
     user: CurrentUser = Depends(require_scope("inventory:read")),
 ) -> InventoryBalanceOut:
-    row = (
+    rows = (
         await db.execute(
-            select(InventoryBalance, Product, Warehouse)
+            select(InventoryBalance, Product)
             .join(Product, Product.id == InventoryBalance.product_id)
-            .join(Warehouse, Warehouse.id == InventoryBalance.warehouse_id)
             .where(
                 InventoryBalance.organization_id == uuid.UUID(user.organization_id),
                 InventoryBalance.product_id == uuid.UUID(product_id),
             )
         )
-    ).first()
-    if row is None:
+    ).all()
+    if not rows:
         raise NotFoundError("该商品暂无库存记录")
-    balance, product, warehouse = row
-    return _balance_out(balance, product, warehouse)
+    product = rows[0][1]
+    on_hand = sum((b.on_hand for b, _ in rows), Decimal("0"))
+    reserved = sum((b.reserved for b, _ in rows), Decimal("0"))
+    version = sum((b.version for b, _ in rows), 0)
+    return InventoryBalanceOut(
+        product_id=product.id,
+        sku=product.sku,
+        name=product.name,
+        warehouse_id=None,
+        warehouse_code="ALL",
+        on_hand=on_hand,
+        reserved=reserved,
+        available=on_hand - reserved,
+        version=version,
+    )
 
 
 @router.get("/inventory/{product_id}/lots", response_model=list[InventoryLotOut])
@@ -165,14 +256,22 @@ async def list_lots(
 ) -> list[InventoryLotOut]:
     rows = (
         await db.execute(
-            select(InventoryLot).where(
+            select(InventoryLot, Location)
+            .outerjoin(Location, Location.id == InventoryLot.location_id)
+            .where(
                 InventoryLot.organization_id == uuid.UUID(user.organization_id),
                 InventoryLot.product_id == uuid.UUID(product_id),
             )
             .order_by(InventoryLot.received_at)
         )
-    ).scalars().all()
-    return [InventoryLotOut.model_validate(row) for row in rows]
+    ).all()
+    return [
+        InventoryLotOut(
+            **InventoryLotOut.model_validate(lot).model_dump(exclude={"location_code"}),
+            location_code=location.code if location else None,
+        )
+        for lot, location in rows
+    ]
 
 
 @router.get("/inventory/{product_id}/movements", response_model=list[StockMovementOut])

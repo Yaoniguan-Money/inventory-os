@@ -53,22 +53,26 @@ async def _query_inventory(db: AsyncSession, organization_id: str, product_id: s
     }
 
 
-async def _query_prices(db: AsyncSession, organization_id: str, product_id: str) -> dict:
+async def _query_prices(
+    db: AsyncSession, organization_id: str, product_id: str, scopes: set[str]
+) -> dict:
     prices = await get_prices(db, organization_id=organization_id, product_id=product_id)
-    return {
-        "last_purchase_price": str(prices["last_purchase_price"].price)
-        if prices["last_purchase_price"]
-        else None,
-        "weighted_avg_cost": str(prices["weighted_avg_cost"].price)
-        if prices["weighted_avg_cost"]
-        else None,
-        "target_sell_price": str(prices["target_sell_price"].price)
-        if prices["target_sell_price"]
-        else None,
-        "actual_sell_price": str(prices["actual_sell_price"].price)
-        if prices["actual_sell_price"]
-        else None,
-    }
+    result: dict = {}
+    if "pricing:cost:read" in scopes:
+        result["last_purchase_price"] = (
+            str(prices["last_purchase_price"].price) if prices["last_purchase_price"] else None
+        )
+        result["weighted_avg_cost"] = (
+            str(prices["weighted_avg_cost"].price) if prices["weighted_avg_cost"] else None
+        )
+    if "pricing:internal:read" in scopes:
+        result["target_sell_price"] = (
+            str(prices["target_sell_price"].price) if prices["target_sell_price"] else None
+        )
+        result["actual_sell_price"] = (
+            str(prices["actual_sell_price"].price) if prices["actual_sell_price"] else None
+        )
+    return result
 
 
 async def _query_market(db: AsyncSession, organization_id: str, product_id: str) -> dict:
@@ -98,6 +102,7 @@ async def employee_assistant(
     *,
     organization_id: str,
     user_role: str,
+    scopes: set[str],
     query: str,
 ) -> dict:
     kb = await search_knowledge(
@@ -112,37 +117,44 @@ async def employee_assistant(
     tools_result: list[dict] = []
     product_id: str | None = None
     # 尝试从提问中解析商品
-    for product in (
-        await db.execute(
-            select(Product).where(Product.organization_id == uuid.UUID(organization_id)).limit(50)
-        )
-    ).scalars():
-        if product.sku.lower() in query.lower() or product.name.lower() in query.lower():
-            product_id = str(product.id)
-            break
+    if "products:read" in scopes:
+        for product in (
+            await db.execute(
+                select(Product)
+                .where(Product.organization_id == uuid.UUID(organization_id))
+                .limit(50)
+            )
+        ).scalars():
+            if product.sku.lower() in query.lower() or product.name.lower() in query.lower():
+                product_id = str(product.id)
+                break
 
     if product_id:
-        tools_result.append(
-            {
-                "label": f"商品 {product_id}",
-                "value": await _query_product(db, organization_id, product_id),
-            }
-        )
-        tools_result.append(
-            {
-                "label": "库存",
-                "value": await _query_inventory(db, organization_id, product_id),
-            }
-        )
-        tools_result.append(
-            {
-                "label": "价格",
-                "value": await _query_prices(db, organization_id, product_id),
-            }
-        )
-        tools_result.append(
-            {"label": "市场", "value": await _query_market(db, organization_id, product_id)}
-        )
+        if "products:read" in scopes:
+            tools_result.append(
+                {
+                    "label": f"商品 {product_id}",
+                    "value": await _query_product(db, organization_id, product_id),
+                }
+            )
+        if "inventory:read" in scopes:
+            tools_result.append(
+                {
+                    "label": "库存",
+                    "value": await _query_inventory(db, organization_id, product_id),
+                }
+            )
+        if "pricing:cost:read" in scopes or "pricing:internal:read" in scopes:
+            tools_result.append(
+                {
+                    "label": "价格",
+                    "value": await _query_prices(db, organization_id, product_id, scopes),
+                }
+            )
+        if "market:read" in scopes:
+            tools_result.append(
+                {"label": "市场", "value": await _query_market(db, organization_id, product_id)}
+            )
 
     evidence_lines = [f"- {kb_hit['document_title']}: {kb_hit['excerpt']}" for kb_hit in kb["hits"]]
     if product_id:
