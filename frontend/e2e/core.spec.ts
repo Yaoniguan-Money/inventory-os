@@ -49,7 +49,7 @@ test('核心经营链路：登录→商品→订单→确认→交付→风险',
   await page.getByRole('link', { name: 'A001' }).first().click()
   await expect(page.getByText('inventory.shipped').first()).toBeVisible()
 
-  // 7. 库存风险
+  // 7. 库存风险（A003 临期批次 → EXPIRY_RISK；已预留订单不再误报缺货）
   await page.getByRole('link', { name: '风险中心' }).click()
-  await expect(page.getByText('STOCKOUT_RISK').first()).toBeVisible()
+  await expect(page.getByText('EXPIRY_RISK').first()).toBeVisible()
 })

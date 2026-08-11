@@ -86,7 +86,7 @@ async def test_multi_warehouse_aggregation(
     assert Decimal(wb_item["on_hand"]) == Decimal("150")
     assert Decimal(wb_item["available"]) == Decimal("150")
 
-    # 聚合后可用 150（默认仓库可用 100），订单 80 可正常确认
+    # 跨仓分配：总可用 150，订单 120 应拆分为 WH01 100 + WH02 20
     customer = await client.post(
         "/api/v1/customers",
         headers=org_owner_headers,
@@ -97,7 +97,7 @@ async def test_multi_warehouse_aggregation(
         headers=org_owner_headers,
         json={
             "customer_id": customer.json()["id"],
-            "lines": [{"product_id": ids["product_id"], "ordered_qty": "80"}],
+            "lines": [{"product_id": ids["product_id"], "ordered_qty": "120"}],
         },
     )
     confirmed = await client.post(
@@ -107,8 +107,28 @@ async def test_multi_warehouse_aggregation(
     after = await client.get(
         f"/api/v1/inventory/{ids['product_id']}", headers=org_owner_headers
     )
-    assert Decimal(after.json()["reserved"]) == Decimal("80")
-    assert Decimal(after.json()["available"]) == Decimal("70")
+    assert Decimal(after.json()["reserved"]) == Decimal("120")
+    assert Decimal(after.json()["available"]) == Decimal("30")
+
+    # 部分交付 60：按预留 FIFO 从 WH01 扣减，WH02 预留不受影响。
+    line_id = order.json()["lines"][0]["id"]
+    fulfilled = await client.post(
+        f"/api/v1/orders/{order.json()['id']}/fulfill",
+        headers=org_owner_headers,
+        json={"lines": [{"sales_order_line_id": line_id, "quantity": "60"}]},
+    )
+    assert fulfilled.status_code == 200, fulfilled.text
+    assert fulfilled.json()["status"] == "PARTIAL"
+    listing = await client.get("/api/v1/inventory", headers=org_owner_headers)
+    wh_rows = {
+        r["warehouse_code"]: r
+        for r in listing.json()
+        if r["product_id"] == ids["product_id"]
+    }
+    assert Decimal(wh_rows["WH01"]["on_hand"]) == Decimal("40")
+    assert Decimal(wh_rows["WH01"]["reserved"]) == Decimal("40")
+    assert Decimal(wh_rows["WH02"]["on_hand"]) == Decimal("50")
+    assert Decimal(wh_rows["WH02"]["reserved"]) == Decimal("20")
 
 
 async def test_workbench_demand_uses_order_required_at(
@@ -397,7 +417,43 @@ async def test_order_filters_and_detail_risk_fields(
     line = detail.json()["lines"][0]
     assert Decimal(line["available"]) == Decimal("10")
     assert "incoming" in line
-    assert line["fulfillment_risk"] is True
+    assert line["fulfillment_risk"] is False
+
+    # 模拟预留不足的异常数据：已预留只剩 40，剩余 80。
+    from app.domains.orders.models import InventoryReservation, SalesOrderLine
+    from app.domains.warehouse.models import InventoryBalance
+
+    async with new_session() as db:
+        dirty_line = (
+            await db.execute(
+                select(SalesOrderLine).where(
+                    SalesOrderLine.sales_order_id == due_order.json()["id"]
+                )
+            )
+        ).scalar_one()
+        dirty_line.reserved_qty = Decimal("40")
+        reservation = (
+            await db.execute(
+                select(InventoryReservation).where(
+                    InventoryReservation.sales_order_line_id == dirty_line.id,
+                    InventoryReservation.status == "ACTIVE",
+                )
+            )
+        ).scalar_one()
+        reservation.quantity = Decimal("40")
+        balance = (
+            await db.execute(
+                select(InventoryBalance).where(
+                    InventoryBalance.product_id == ids["product_id"]
+                )
+            )
+        ).scalar_one()
+        balance.reserved = Decimal("40")
+        await db.commit()
+    risky = await client.get(
+        f"/api/v1/orders/{due_order.json()['id']}", headers=org_owner_headers
+    )
+    assert risky.json()["lines"][0]["fulfillment_risk"] is True
 
 
 async def test_dashboard_aggregation(
@@ -432,11 +488,48 @@ async def test_dashboard_aggregation(
     data = resp.json()
     assert Decimal(data["inventory_value"]) > 0
     assert data["orders_due"] >= 1
-    assert data["at_risk_orders"] >= 1
+    assert data["at_risk_orders"] == 0  # 100% 预留的订单不算风险
     assert data["health_score"] >= 0
-    assert data["pressure_7d"]
-    assert any(p["sku"] == "DASH-01" for p in data["pressure_7d"])
+    assert data["pressure_7d"] == []  # 已预留需求不再重复计缺口
     assert data["upcoming_orders"]
     assert any(o["order_no"] == order.json()["order_no"] for o in data["upcoming_orders"])
     assert data["recent_events"]
     assert data["market_anomalies"]
+
+    # 模拟异常数据：预留被错误释放但订单仍确认 → 压力与风险重新出现。
+    from app.domains.orders.models import InventoryReservation, SalesOrderLine
+    from app.domains.warehouse.models import InventoryBalance
+
+    async with new_session() as db:
+        dirty_line = (
+            await db.execute(
+                select(SalesOrderLine).where(
+                    SalesOrderLine.sales_order_id == order.json()["id"]
+                )
+            )
+        ).scalar_one()
+        dirty_line.reserved_qty = Decimal("0")
+        for reservation in (
+            await db.execute(
+                select(InventoryReservation).where(
+                    InventoryReservation.sales_order_line_id == dirty_line.id,
+                    InventoryReservation.status == "ACTIVE",
+                )
+            )
+        ).scalars():
+            reservation.status = "RELEASED"
+            reservation.quantity = Decimal("0")
+        balance = (
+            await db.execute(
+                select(InventoryBalance).where(
+                    InventoryBalance.product_id == ids["product_id"]
+                )
+            )
+        ).scalar_one()
+        balance.reserved = Decimal("0")
+        balance.on_hand = Decimal("400")
+        await db.commit()
+    dirty = await client.get("/api/v1/dashboard", headers=org_owner_headers)
+    dirty_data = dirty.json()
+    assert any(p["sku"] == "DASH-01" for p in dirty_data["pressure_7d"])
+    assert dirty_data["at_risk_orders"] >= 1

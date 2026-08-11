@@ -195,6 +195,26 @@
 - AGENTS.md 补入“最高优先级工程约束”（不得功能降级/silent fallback/DoD 降级、多仓库聚合、Tool/API Key scope 执行）。
 - 当前后端测试 71 项全通过（本轮新增 11 项），前端构建/测试与 E2E 待最终验证。
 
+## 第四轮审计修复（健康公式 / 跨仓预留 / 成本聚合 / 智能出入库 / 收尾）
+
+- 库存健康核心公式修正：只对“未被预留覆盖”的到期需求（`unreserved_due`）计算缺口；
+  已 100% 预留的订单不再被误报缺货/履约风险。Health、Dashboard、商品详情、订单详情口径统一。
+- 跨仓订单分配：确认订单按默认仓优先跨仓拆分 Reservation（WH01 100 + WH02 20 场景）；
+  交付按预留 FIFO 跨仓消费批次；取消按预留逐仓释放。
+- 移动加权平均成本改为 SKU 全局聚合（入库前 old_on_hand 汇总全仓），价格快照不再被单仓污染。
+- `issue_stock`（维修领料）与手工负调整显式尊重 Reserved：最大可扣 = Available，
+  禁止悄悄挪用订单预留，由业务层拒绝（409）而非数据库约束兜底。
+- 智能出入库产品流：前端新增 ProductResolver（扫码/文字/拍照 → `/ai/resolve-product` →
+  候选确认 → 入库），接入仓库入库窗口与商品中心；后端视觉输出改为结构化 JSON 解析后二次匹配。
+- Market Quote/Event 去重加入 `product_id`：多个 SKU 追踪同一外部符号时互不串货。
+- AI Provider 配置显式化：未知 Provider 直接报错；`openai` 缺 Key 返回显式 disabled Provider，
+  不再无声退回 Demo。
+- 日期口径统一 `COALESCE(line.required_at, order.required_at)` 与
+  `COALESCE(line.expected_at, po.expected_at)`（需求与在途两处），行级日期优先。
+- 知识文档详情按角色校验 OWNER scope；维修 `fault_record_id` 必须属于当前组织与当前设备。
+- Playwright 加入 GitHub Actions（独立 E2E Job）；README 测试计数更新。
+- 当前后端测试 79 项全通过（本轮新增 8 项），前端构建/测试与 E2E 待最终验证。
+
 ## Definition of Done 核对
 
 - [x] private repo 创建：https://github.com/Yaoniguan-Money/inventory-os
@@ -218,7 +238,7 @@
 - [x] 采购中心统一视图（库存/在途/需求/历史采购价/供应商/行情）
 - [x] ForecastProvider / capability / API 存在且 disabled；UI 无伪预测
 - [x] 未实现面向客户客服助手
-- [x] 权限测试、核心库存/订单测试通过（pytest 71 项，含跨租户/权限绕过/批次边界/成本快照/多仓库/API Key scope/AI Tool scope 回归）
+- [x] 权限测试、核心库存/订单测试通过（pytest 79 项，含跨租户/权限绕过/批次边界/成本快照/多仓库/API Key scope/AI Tool scope/健康公式/跨仓预留回归）
 - [x] Playwright 核心链路通过
 - [x] CI 工作流已配置；本地等价检查（ruff/mypy/pytest/build/typecheck/lint/test）全绿，推送后由 GitHub Actions 验证
 - [x] docs/PROGRESS.md 处于最终完成状态

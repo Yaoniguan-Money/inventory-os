@@ -1,5 +1,9 @@
 import { defineConfig } from '@playwright/test'
 
+const e2eDatabaseUrl =
+  process.env.E2E_DATABASE_URL ??
+  'postgresql+asyncpg://inventory:inventory_dev_password@localhost:5433/inventory_os_e2e'
+
 export default defineConfig({
   testDir: './e2e',
   timeout: 90_000,
@@ -10,8 +14,7 @@ export default defineConfig({
   },
   webServer: [
     {
-      command:
-        'set DATABASE_URL=postgresql+asyncpg://inventory:inventory_dev_password@localhost:5433/inventory_os_e2e&& cd ..\\backend && uv run python -m app.scripts.reset_e2e && uv run uvicorn app.main:app --host 127.0.0.1 --port 8000',
+      command: `set DATABASE_URL=${e2eDatabaseUrl}&& cd ..\\backend && uv run python -m app.scripts.reset_e2e && uv run uvicorn app.main:app --host 127.0.0.1 --port 8000`,
       url: 'http://127.0.0.1:8000/',
       reuseExistingServer: false,
       timeout: 60_000,

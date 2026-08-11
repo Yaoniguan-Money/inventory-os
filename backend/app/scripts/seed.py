@@ -221,7 +221,8 @@ async def seed_business() -> None:
         customer2 = await _customer(db, org, "C002", "苏州精密设备厂")
         customer3 = await _customer(db, org, "C003", "宁波新材料贸易")
 
-        # A001 订单压力：可用 440，未来 7 日待交付 460，无足够在途 → 缺口告警
+        # A001 订单压力：未来 7 日待交付 460 且已全额预留（验证不再误报缺货）；
+        # PO 在途 300（预计 +20 天），用于演示跨仓/在途口径。
         due = now + timedelta(days=3)
         order1 = await create_sales_order(
             db,

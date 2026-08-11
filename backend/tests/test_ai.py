@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import httpx
 
+from app.core.database import new_session
+
 
 async def _setup_ai(client: httpx.AsyncClient, headers: dict[str, str]) -> dict[str, str]:
     product = await client.post(
@@ -110,6 +112,42 @@ async def test_explain_alert_uses_evidence(
         )
     ).json()
     await client.post(f"/api/v1/orders/{order['id']}/confirm", headers=org_owner_headers)
+
+    from decimal import Decimal
+
+    from sqlalchemy import select
+
+    from app.domains.orders.models import InventoryReservation, SalesOrderLine
+    from app.domains.warehouse.models import InventoryBalance
+
+    async with new_session() as db:
+        line = (
+            await db.execute(
+                select(SalesOrderLine).where(SalesOrderLine.sales_order_id == order["id"])
+            )
+        ).scalar_one()
+        line.reserved_qty = Decimal("0")
+        balance = (
+            await db.execute(
+                select(InventoryBalance).where(
+                    InventoryBalance.product_id == ids["product_id"]
+                )
+            )
+        ).scalar_one()
+        balance.reserved = Decimal("0")
+        balance.on_hand = Decimal("400")
+        for reservation in (
+            await db.execute(
+                select(InventoryReservation).where(
+                    InventoryReservation.sales_order_line_id == line.id,
+                    InventoryReservation.status == "ACTIVE",
+                )
+            )
+        ).scalars():
+            reservation.status = "RELEASED"
+            reservation.quantity = Decimal("0")
+        await db.commit()
+
     health = await client.get(
         f"/api/v1/products/{ids['product_id']}/health", headers=org_owner_headers
     )
@@ -119,9 +157,7 @@ async def test_explain_alert_uses_evidence(
     )
     assert explanation.status_code == 200
     data = explanation.json()
-    from decimal import Decimal
-
-    assert Decimal(data["evidence"]["shortage"]) == Decimal("700")
+    assert Decimal(data["evidence"]["shortage"]) == Decimal("450")
     assert data["provider"] == "demo"
     assert "证据" in data["explanation"] or data["explanation"]
 

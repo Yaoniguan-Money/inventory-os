@@ -5,7 +5,7 @@ from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 
 from fastapi import APIRouter, Depends, Query
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.database import get_db
@@ -166,7 +166,7 @@ async def product_overview(
                 SalesOrder.organization_id == uuid.UUID(user.organization_id),
                 SalesOrderLine.product_id == uuid.UUID(product_id),
                 SalesOrder.status.in_(["CONFIRMED", "PARTIAL"]),
-                (SalesOrderLine.required_at <= horizon) | (SalesOrder.required_at <= horizon),
+                func.coalesce(SalesOrderLine.required_at, SalesOrder.required_at) <= horizon,
             )
         )
     ).all()

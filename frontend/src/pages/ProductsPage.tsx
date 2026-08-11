@@ -4,6 +4,7 @@ import { Plus } from 'lucide-react'
 import { Link } from 'react-router-dom'
 import { api } from '../lib/api.ts'
 import { fmtMoney } from '../lib/format.ts'
+import { ScanBarcode } from 'lucide-react'
 import {
   Badge,
   Button,
@@ -15,6 +16,8 @@ import {
   Spinner,
   statusTone,
 } from '../components/ui.tsx'
+import ProductResolver from '../components/ProductResolver.tsx'
+import { useNavigate } from 'react-router-dom'
 
 interface Product {
   id: string
@@ -29,8 +32,10 @@ interface Product {
 
 export default function ProductsPage() {
   const queryClient = useQueryClient()
+  const navigate = useNavigate()
   const [search, setSearch] = useState('')
   const [createOpen, setCreateOpen] = useState(false)
+  const [resolverOpen, setResolverOpen] = useState(false)
   const [form, setForm] = useState({
     sku: '',
     name: '',
@@ -70,9 +75,14 @@ export default function ProductsPage() {
         title="商品中心"
         description="SKU、批次、价格与市场跟踪"
         action={
-          <Button onClick={() => setCreateOpen(true)}>
-            <Plus className="mr-1 inline h-4 w-4" /> 新建商品
-          </Button>
+          <div className="flex gap-2">
+            <Button variant="outline" onClick={() => setResolverOpen(true)}>
+              <ScanBarcode className="mr-1 inline h-4 w-4" /> 智能识别
+            </Button>
+            <Button onClick={() => setCreateOpen(true)}>
+              <Plus className="mr-1 inline h-4 w-4" /> 新建商品
+            </Button>
+          </div>
         }
       />
       <Card className="p-0">
@@ -171,6 +181,14 @@ export default function ProductsPage() {
             {createMutation.isPending ? '创建中…' : '创建'}
           </Button>
         </div>
+      </Modal>
+      <Modal open={resolverOpen} onClose={() => setResolverOpen(false)} title="智能识别商品">
+        <ProductResolver
+          onSelect={(p) => {
+            setResolverOpen(false)
+            navigate(`/products/${p.id}`)
+          }}
+        />
       </Modal>
     </div>
   )

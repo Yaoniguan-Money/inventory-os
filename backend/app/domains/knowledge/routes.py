@@ -64,7 +64,10 @@ async def get_document_route(
     user: CurrentUser = Depends(require_scope("knowledge:read")),
 ) -> KnowledgeDocumentDetail:
     detail = await document_detail(
-        db, organization_id=user.organization_id, document_id=document_id
+        db,
+        organization_id=user.organization_id,
+        document_id=document_id,
+        user_role=user.role,
     )
     return KnowledgeDocumentDetail.model_validate(detail)
 

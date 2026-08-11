@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import uuid
 from decimal import Decimal
 
@@ -95,6 +96,21 @@ async def _query_market(db: AsyncSession, organization_id: str, product_id: str)
             for e in market["events"]
         ],
     }
+
+
+def _parse_vision_json(raw: str) -> dict:
+    """解析视觉 Provider 的结构化输出，容忍 ```json 代码块。"""
+
+    cleaned = raw.strip()
+    if cleaned.startswith("```"):
+        cleaned = cleaned.strip("`")
+        if cleaned.startswith("json"):
+            cleaned = cleaned[4:]
+    try:
+        data = json.loads(cleaned)
+        return data if isinstance(data, dict) else {}
+    except json.JSONDecodeError:
+        return {}
 
 
 async def employee_assistant(
@@ -215,16 +231,52 @@ async def resolve_product(
             )
     if text or (image_data_url and not candidates):
         search_text = text or ""
-        if not search_text and image_data_url:
+        search_terms: list[str] = []
+        vision_barcode: str | None = None
+        if image_data_url and not text:
             provider = get_ai_provider()
             if provider.capability.supports_vision:
-                search_text = await provider.vision(
-                    system="识别图片中的商品信息，输出 SKU/名称/条码。",
-                    prompt="请识别该商品并输出名称、型号或条码。",
+                raw = await provider.vision(
+                    system=(
+                        "你是商品识别助手，只输出 JSON，不要输出其它文字。"
+                        '格式: {"sku_candidates": [], "model": "", "barcode": "", "keywords": []}'
+                    ),
+                    prompt="识别图片中的商品，输出 SKU 候选、型号、条码与关键词。",
                     image_data_url=image_data_url,
                 )
-        if search_text:
-            like = f"%{search_text.strip()}%"
+                parsed = _parse_vision_json(raw)
+                vision_barcode = parsed.get("barcode")
+                search_terms = [
+                    *[str(x) for x in parsed.get("sku_candidates", [])],
+                    *[str(x) for x in parsed.get("keywords", [])],
+                ]
+                if parsed.get("model"):
+                    search_terms.append(str(parsed["model"]))
+        if vision_barcode:
+            rows = (
+                await db.execute(
+                    select(Product).where(
+                        Product.organization_id == uuid.UUID(organization_id),
+                        Product.barcode == vision_barcode,
+                    )
+                )
+            ).scalars().all()
+            for product in rows:
+                candidates.append(
+                    {
+                        "product_id": product.id,
+                        "sku": product.sku,
+                        "name": product.name,
+                        "confidence": 0.99,
+                        "reason": "vision barcode match",
+                    }
+                )
+        search_terms = [t for t in search_terms if t]
+        if not search_terms and search_text:
+            search_terms = [search_text]
+        seen_ids = {str(c["product_id"]) for c in candidates}
+        for term in search_terms:
+            like = f"%{term.strip()}%"
             rows = (
                 await db.execute(
                     select(Product).where(
@@ -236,13 +288,18 @@ async def resolve_product(
                 )
             ).scalars().all()
             for product in rows[:5]:
+                if str(product.id) in seen_ids:
+                    continue
+                seen_ids.add(str(product.id))
                 candidates.append(
                     {
                         "product_id": product.id,
                         "sku": product.sku,
                         "name": product.name,
-                        "confidence": 0.9 if product.sku == search_text.strip() else 0.7,
-                        "reason": "text search match",
+                        "confidence": (
+                            0.9 if product.sku == term.strip() or product.barcode == term.strip() else 0.7
+                        ),
+                        "reason": "text/vision search match",
                     }
                 )
     requires_confirmation = not (len(candidates) == 1 and candidates[0]["confidence"] >= 0.99)

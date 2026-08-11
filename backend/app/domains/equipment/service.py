@@ -178,6 +178,18 @@ async def add_maintenance(
     equipment = await get_equipment(
         db, organization_id=organization_id, equipment_id=equipment_id, for_update=True
     )
+    if payload.fault_record_id:
+        fault = (
+            await db.execute(
+                select(FaultRecord).where(
+                    FaultRecord.id == payload.fault_record_id,
+                    FaultRecord.organization_id == uuid.UUID(organization_id),
+                    FaultRecord.equipment_id == equipment.id,
+                )
+            )
+        ).scalar_one_or_none()
+        if fault is None:
+            raise NotFoundError("故障记录不存在或不属于当前设备")
     maintenance = MaintenanceRecord(
         organization_id=uuid.UUID(organization_id),
         equipment_id=equipment.id,

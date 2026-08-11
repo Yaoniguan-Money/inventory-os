@@ -78,17 +78,92 @@ async def test_stockout_risk_rule(
     ).json()
     await client.post(f"/api/v1/orders/{order['id']}/confirm", headers=org_owner_headers)
 
+    # 已确认订单已全额预留，不应产生缺货告警。
     health = await client.get(
         f"/api/v1/products/{ids['product_id']}/health", headers=org_owner_headers
     )
     assert health.status_code == 200
+    assert not any(a["alert_type"] == "STOCKOUT_RISK" for a in health.json()["alerts"])
+
+    # 模拟“预留覆盖缺失”的异常数据：订单仍确认，但预留被错误释放/不足。
+    from sqlalchemy import select
+
+    from app.domains.orders.models import InventoryReservation, SalesOrderLine
+    from app.domains.warehouse.models import InventoryBalance
+
+    async with new_session() as db:
+        line = (
+            await db.execute(
+                select(SalesOrderLine).where(SalesOrderLine.sales_order_id == order["id"])
+            )
+        ).scalar_one()
+        line.reserved_qty = Decimal("0")
+        balance = (
+            await db.execute(
+                select(InventoryBalance).where(
+                    InventoryBalance.product_id == ids["product_id"]
+                )
+            )
+        ).scalar_one()
+        balance.reserved = Decimal("0")
+        balance.on_hand = Decimal("400")
+        for reservation in (
+            await db.execute(
+                select(InventoryReservation).where(
+                    InventoryReservation.sales_order_line_id == line.id,
+                    InventoryReservation.status == "ACTIVE",
+                )
+            )
+        ).scalars():
+            reservation.status = "RELEASED"
+            reservation.quantity = Decimal("0")
+        await db.commit()
+
+    health = await client.get(
+        f"/api/v1/products/{ids['product_id']}/health", headers=org_owner_headers
+    )
     data = health.json()
     alert = next(a for a in data["alerts"] if a["alert_type"] == "STOCKOUT_RISK")
     assert alert["status"] == "OPEN"
-    assert Decimal(alert["evidence_json"]["shortage"]) == Decimal("700")
-    assert Decimal(alert["evidence_json"]["available"]) == Decimal("150")
+    assert Decimal(alert["evidence_json"]["shortage"]) == Decimal("450")
+    assert Decimal(alert["evidence_json"]["unreserved_due"]) == Decimal("850")
+    assert Decimal(alert["evidence_json"]["available"]) == Decimal("400")
     assert data["score"] < 100
     assert any(d["alert_type"] == "STOCKOUT_RISK" for d in data["deductions"])
+
+
+async def test_fully_reserved_order_has_no_stockout_alert(
+    client: httpx.AsyncClient, org_owner_headers: dict[str, str]
+) -> None:
+    """核心回归：100% 预留的订单不应再被标成缺货。"""
+
+    ids = await _setup_product(client, org_owner_headers, sku="H005")
+    await _receive(client, org_owner_headers, ids, "1000")
+    customer = (
+        await client.post(
+            "/api/v1/customers",
+            headers=org_owner_headers,
+            json={"code": "C005", "name": "预留客户"},
+        )
+    ).json()
+    order = (
+        await client.post(
+            "/api/v1/orders",
+            headers=org_owner_headers,
+            json={
+                "customer_id": customer["id"],
+                "lines": [{"product_id": ids["product_id"], "ordered_qty": "600"}],
+                "required_at": (datetime.now(UTC) + timedelta(days=3)).isoformat(),
+            },
+        )
+    ).json()
+    await client.post(f"/api/v1/orders/{order['id']}/confirm", headers=org_owner_headers)
+    health = await client.get(
+        f"/api/v1/products/{ids['product_id']}/health", headers=org_owner_headers
+    )
+    data = health.json()
+    assert not any(a["alert_type"] == "STOCKOUT_RISK" for a in data["alerts"])
+    assert not any(a["alert_type"] == "ORDER_FULFILLMENT_RISK" for a in data["alerts"])
 
 
 async def test_expiry_risk_rule(
@@ -158,12 +233,63 @@ async def test_alert_resolves_when_fixed(
         )
     ).json()
     await client.post(f"/api/v1/orders/{order['id']}/confirm", headers=org_owner_headers)
+    from sqlalchemy import select
+
+    from app.domains.orders.models import InventoryReservation, SalesOrderLine
+    from app.domains.warehouse.models import InventoryBalance
+
+    async with new_session() as db:
+        line = (
+            await db.execute(
+                select(SalesOrderLine).where(SalesOrderLine.sales_order_id == order["id"])
+            )
+        ).scalar_one()
+        line.reserved_qty = Decimal("0")
+        balance = (
+            await db.execute(
+                select(InventoryBalance).where(
+                    InventoryBalance.product_id == ids["product_id"]
+                )
+            )
+        ).scalar_one()
+        balance.reserved = Decimal("0")
+        balance.on_hand = Decimal("400")
+        for reservation in (
+            await db.execute(
+                select(InventoryReservation).where(
+                    InventoryReservation.sales_order_line_id == line.id,
+                    InventoryReservation.status == "ACTIVE",
+                )
+            )
+        ).scalars():
+            reservation.status = "RELEASED"
+            reservation.quantity = Decimal("0")
+        await db.commit()
+
     before = await client.get(
         f"/api/v1/products/{ids['product_id']}/health", headers=org_owner_headers
     )
     assert any(a["alert_type"] == "STOCKOUT_RISK" for a in before.json()["alerts"])
 
-    await _receive(client, org_owner_headers, ids, "800")
+    # 修复：恢复预留与实物库存，告警应解除。
+    async with new_session() as db:
+        line = (
+            await db.execute(
+                select(SalesOrderLine).where(SalesOrderLine.sales_order_id == order["id"])
+            )
+        ).scalar_one()
+        line.reserved_qty = Decimal("850")
+        balance = (
+            await db.execute(
+                select(InventoryBalance).where(
+                    InventoryBalance.product_id == ids["product_id"]
+                )
+            )
+        ).scalar_one()
+        balance.reserved = Decimal("850")
+        balance.on_hand = Decimal("1000")
+        await db.commit()
+
     after = await client.get(
         f"/api/v1/products/{ids['product_id']}/health", headers=org_owner_headers
     )

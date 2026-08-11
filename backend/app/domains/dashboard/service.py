@@ -4,7 +4,7 @@ import uuid
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.domains.catalog.models import Product
@@ -52,7 +52,7 @@ async def _incoming_before(
     )
     if deadline is not None:
         stmt = stmt.where(
-            (PurchaseOrderLine.expected_at <= deadline) | (PurchaseOrder.expected_at <= deadline)
+            func.coalesce(PurchaseOrderLine.expected_at, PurchaseOrder.expected_at) <= deadline
         )
     lines = (await db.execute(stmt)).scalars().all()
     return sum((line.ordered_qty - line.received_qty for line in lines), Decimal("0"))
@@ -134,7 +134,7 @@ async def dashboard(db: AsyncSession, *, organization_id: str) -> dict:
             incoming = await _incoming_before(
                 db, organization_id, str(line.product_id), deadline
             )
-            if remaining > available + incoming:
+            if remaining > line.reserved_qty + incoming:
                 order_risk = True
         if order_risk:
             at_risk_orders += 1
@@ -168,15 +168,23 @@ async def dashboard(db: AsyncSession, *, organization_id: str) -> dict:
                     SalesOrder.organization_id == org_uuid,
                     SalesOrderLine.product_id == product.id,
                     SalesOrder.status.in_(["CONFIRMED", "PARTIAL"]),
-                    (SalesOrderLine.required_at <= horizon) | (SalesOrder.required_at <= horizon),
+                    func.coalesce(SalesOrderLine.required_at, SalesOrder.required_at) <= horizon,
                 )
             )
         ).all()
         due_demand = sum(
             (line.ordered_qty - line.delivered_qty for line, _ in demand_rows), Decimal("0")
         )
+        reserved_for_due = sum(
+            (
+                min(line.ordered_qty - line.delivered_qty, line.reserved_qty)
+                for line, _ in demand_rows
+            ),
+            Decimal("0"),
+        )
+        unreserved_due = max(due_demand - reserved_for_due, Decimal("0"))
         incoming = await _incoming_before(db, organization_id, str(product.id), horizon)
-        shortage = due_demand - available - incoming
+        shortage = unreserved_due - available - incoming
         if shortage > 0:
             pressure_7d.append(
                 {
@@ -184,6 +192,8 @@ async def dashboard(db: AsyncSession, *, organization_id: str) -> dict:
                     "sku": product.sku,
                     "name": product.name,
                     "due_demand": str(due_demand),
+                    "reserved_for_due": str(reserved_for_due),
+                    "unreserved_due": str(unreserved_due),
                     "available": str(available),
                     "incoming": str(incoming),
                     "shortage": str(shortage),

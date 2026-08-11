@@ -42,6 +42,7 @@ async def refresh_market(db: AsyncSession, *, organization_id: str) -> dict:
                 await db.execute(
                     select(MarketQuote).where(
                         MarketQuote.organization_id == uuid.UUID(organization_id),
+                        MarketQuote.product_id == mapping.product_id,
                         MarketQuote.external_symbol == quote.external_symbol,
                         MarketQuote.quote_kind == quote.quote_kind,
                         MarketQuote.region == quote.region,
@@ -95,6 +96,7 @@ async def refresh_market(db: AsyncSession, *, organization_id: str) -> dict:
                 await db.execute(
                     select(MarketEvent).where(
                         MarketEvent.organization_id == uuid.UUID(organization_id),
+                        MarketEvent.product_id == mapping.product_id,
                         MarketEvent.title == event.title,
                         MarketEvent.source == event.source,
                         MarketEvent.published_at == event.published_at,

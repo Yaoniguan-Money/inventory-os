@@ -13,6 +13,7 @@ import {
   ProductLink,
   Spinner,
 } from '../components/ui.tsx'
+import ProductResolver from '../components/ProductResolver.tsx'
 
 interface Balance {
   product_id: string
@@ -158,6 +159,16 @@ export default function InventoryPage() {
       </Card>
 
       <Modal open={receiveOpen} onClose={() => setReceiveOpen(false)} title="入库">
+        <div className="mb-3">
+          <ProductResolver
+            onSelect={(p) =>
+              setForm((f) => ({
+                ...f,
+                product_id: p.id,
+              }))
+            }
+          />
+        </div>
         <StockForm
           form={form}
           setForm={setForm}

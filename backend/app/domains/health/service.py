@@ -4,7 +4,7 @@ import uuid
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import settings
@@ -19,6 +19,29 @@ from app.domains.purchasing.models import PurchaseOrder, PurchaseOrderLine
 from app.domains.warehouse.models import InventoryBalance, InventoryLot, StockMovement
 
 SEVERITY_ORDER = {"CRITICAL": 0, "HIGH": 1, "MEDIUM": 2, "LOW": 3, "INFO": 4}
+
+
+async def _incoming_before(
+    db: AsyncSession,
+    organization_id: str,
+    product_id: str,
+    deadline: datetime | None,
+) -> Decimal:
+    stmt = (
+        select(PurchaseOrderLine)
+        .join(PurchaseOrder, PurchaseOrder.id == PurchaseOrderLine.purchase_order_id)
+        .where(
+            PurchaseOrder.organization_id == uuid.UUID(organization_id),
+            PurchaseOrderLine.product_id == uuid.UUID(product_id),
+            PurchaseOrder.status.in_(["CONFIRMED", "PARTIAL"]),
+        )
+    )
+    if deadline is not None:
+        stmt = stmt.where(
+            func.coalesce(PurchaseOrderLine.expected_at, PurchaseOrder.expected_at) <= deadline
+        )
+    lines = (await db.execute(stmt)).scalars().all()
+    return sum((line.ordered_qty - line.received_qty for line in lines), Decimal("0"))
 
 
 async def _upsert_alert(
@@ -138,7 +161,8 @@ async def recalculate_product(
     reserved = sum((b.reserved for b in balances), Decimal("0"))
     available = on_hand - reserved
 
-    # 1) STOCKOUT_RISK: demand in horizon > available + incoming before due.
+    # 1) STOCKOUT_RISK: 只对“尚未被预留覆盖”的到期需求计算缺口。
+    #    已确认订单的需求已体现在 reserved 中，不应再与 available 重复扣减。
     demand_rows = (
         await db.execute(
             select(SalesOrderLine, SalesOrder)
@@ -147,13 +171,21 @@ async def recalculate_product(
                 SalesOrder.organization_id == org_uuid,
                 SalesOrderLine.product_id == product.id,
                 SalesOrder.status.in_(["CONFIRMED", "PARTIAL"]),
-                (SalesOrderLine.required_at <= horizon) | (SalesOrder.required_at <= horizon),
+                func.coalesce(SalesOrderLine.required_at, SalesOrder.required_at) <= horizon,
             )
         )
     ).all()
     due_demand = sum(
         (line.ordered_qty - line.delivered_qty for line, _ in demand_rows), Decimal("0")
     )
+    reserved_for_due = sum(
+        (
+            min(line.ordered_qty - line.delivered_qty, line.reserved_qty)
+            for line, _ in demand_rows
+        ),
+        Decimal("0"),
+    )
+    unreserved_due = max(due_demand - reserved_for_due, Decimal("0"))
     incoming_rows = (
         await db.execute(
             select(PurchaseOrderLine)
@@ -162,14 +194,14 @@ async def recalculate_product(
                 PurchaseOrder.organization_id == org_uuid,
                 PurchaseOrderLine.product_id == product.id,
                 PurchaseOrder.status.in_(["CONFIRMED", "PARTIAL"]),
-                (PurchaseOrderLine.expected_at <= horizon) | (PurchaseOrder.expected_at <= horizon),
+                func.coalesce(PurchaseOrderLine.expected_at, PurchaseOrder.expected_at) <= horizon,
             )
         )
     ).scalars().all()
     incoming_before_due = sum(
         (line.ordered_qty - line.received_qty for line in incoming_rows), Decimal("0")
     )
-    shortage = due_demand - available - incoming_before_due
+    shortage = unreserved_due - available - incoming_before_due
     if shortage > 0:
         severity = "CRITICAL" if shortage > Decimal("0.5") * due_demand else "HIGH"
         await _upsert_alert(
@@ -183,6 +215,8 @@ async def recalculate_product(
                 "horizon_days": settings.health_horizon_days,
                 "available": str(available),
                 "due_demand": str(due_demand),
+                "reserved_for_due": str(reserved_for_due),
+                "unreserved_due": str(unreserved_due),
                 "incoming_before_due": str(incoming_before_due),
                 "shortage": str(shortage),
             },
@@ -291,17 +325,23 @@ async def recalculate_product(
     else:
         await _resolve_alert(db, organization_id=organization_id, product_id=pid, alert_type="EXPIRY_RISK")
 
-    # 5) ORDER_FULFILLMENT_RISK: confirmed order due soon with remaining > available+incoming
+    # 5) ORDER_FULFILLMENT_RISK: 剩余量 > 该行已预留量 + 期限前可到货在途
     order_risks: list[dict] = []
     for line, order in demand_rows:
         remaining = line.ordered_qty - line.delivered_qty
-        if remaining > 0 and remaining > available + incoming_before_due:
+        deadline = line.required_at or order.required_at
+        incoming_for_line = await _incoming_before(
+            db, organization_id, str(line.product_id), deadline
+        )
+        if remaining > 0 and remaining > line.reserved_qty + incoming_for_line:
             order_risks.append(
                 {
                     "order_id": str(order.id),
                     "order_no": order.order_no,
                     "required_at": order.required_at.isoformat() if order.required_at else None,
                     "remaining": str(remaining),
+                    "reserved": str(line.reserved_qty),
+                    "incoming_before_deadline": str(incoming_for_line),
                 }
             )
     if order_risks:

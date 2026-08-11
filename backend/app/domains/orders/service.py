@@ -6,7 +6,7 @@ import uuid
 from datetime import UTC, datetime
 from decimal import Decimal
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.audit import record_audit
@@ -133,7 +133,7 @@ async def build_order_out(db: AsyncSession, organization_id: str, order: SalesOr
         line_meta[str(line.id)] = {
             "available": available,
             "incoming": incoming,
-            "fulfillment_risk": remaining > available + incoming,
+            "fulfillment_risk": remaining > line.reserved_qty + incoming,
         }
     return order_out(order, customer, list(lines), products, line_meta)
 
@@ -252,20 +252,20 @@ async def confirm_order(
     ).scalars().all()
 
     shortages: list[dict] = []
-    # Validate all lines first (availability check with locks).
+    # Validate all lines first（跨仓聚合可用量，带行锁）。
     for line in lines:
         product = await db.get(Product, line.product_id)
         if product is None:
             raise NotFoundError("商品不存在")
-        warehouse = await _default_warehouse(db, organization_id, product)
-        balance = await get_balance_locked(
+        default_warehouse = await _default_warehouse(db, organization_id, product)
+        balances = await _product_balances_locked(
             db,
             organization_id=organization_id,
             product_id=str(line.product_id),
-            warehouse_id=str(warehouse.id),
+            default_warehouse_id=str(default_warehouse.id),
         )
-        available = balance.on_hand - balance.reserved
-        if available < line.ordered_qty:
+        total_available = sum((b.on_hand - b.reserved for b in balances), Decimal("0"))
+        if total_available < line.ordered_qty:
             incoming = await _incoming_before(
                 db,
                 organization_id,
@@ -277,8 +277,8 @@ async def confirm_order(
                     "product_id": str(line.product_id),
                     "sku": product.sku,
                     "ordered_qty": str(line.ordered_qty),
-                    "available": str(available),
-                    "shortage": str(line.ordered_qty - available),
+                    "available": str(total_available),
+                    "shortage": str(line.ordered_qty - total_available),
                     "incoming": str(incoming),
                 }
             )
@@ -292,25 +292,53 @@ async def confirm_order(
         product = await db.get(Product, line.product_id)
         if product is None:
             raise NotFoundError("商品不存在")
-        warehouse = await _default_warehouse(db, organization_id, product)
-        balance = await get_balance_locked(
+        default_warehouse = await _default_warehouse(db, organization_id, product)
+        balances = await _product_balances_locked(
             db,
             organization_id=organization_id,
             product_id=str(line.product_id),
-            warehouse_id=str(warehouse.id),
+            default_warehouse_id=str(default_warehouse.id),
         )
-        balance.reserved += line.ordered_qty
-        balance.version += 1
+        remaining = line.ordered_qty
+        for balance in balances:
+            if remaining <= 0:
+                break
+            available = balance.on_hand - balance.reserved
+            allocation = min(available, remaining)
+            if allocation <= 0:
+                continue
+            balance.reserved += allocation
+            balance.version += 1
+            reservation = InventoryReservation(
+                organization_id=uuid.UUID(organization_id),
+                sales_order_line_id=line.id,
+                product_id=line.product_id,
+                warehouse_id=balance.warehouse_id,
+                quantity=allocation,
+                status="ACTIVE",
+            )
+            db.add(reservation)
+            remaining -= allocation
+            record_event(
+                db,
+                organization_id=organization_id,
+                event_type="inventory.reserved",
+                aggregate_type="product",
+                aggregate_id=str(line.product_id),
+                payload={
+                    "order_id": str(order.id),
+                    "warehouse_id": str(balance.warehouse_id),
+                    "quantity": str(allocation),
+                    "reserved": str(balance.reserved),
+                    "available": str(balance.on_hand - balance.reserved),
+                },
+            )
+        if remaining > 0:
+            raise InsufficientStockError(
+                "可用库存不足，无法确认订单",
+                details={"shortages": shortages},
+            )
         line.reserved_qty = line.ordered_qty
-        reservation = InventoryReservation(
-            organization_id=uuid.UUID(organization_id),
-            sales_order_line_id=line.id,
-            product_id=line.product_id,
-            warehouse_id=warehouse.id,
-            quantity=line.ordered_qty,
-            status="ACTIVE",
-        )
-        db.add(reservation)
         if line.unit_sell_price is not None:
             record_price_snapshot(
                 db,
@@ -328,25 +356,14 @@ async def confirm_order(
             event_type="orders.order.confirmed",
             aggregate_type="order",
             aggregate_id=str(order.id),
-            payload={
-                "product_id": str(line.product_id),
-                "quantity": str(line.ordered_qty),
-                "warehouse_id": str(warehouse.id),
-            },
-        )
-        record_event(
-            db,
-            organization_id=organization_id,
-            event_type="inventory.reserved",
-            aggregate_type="product",
-            aggregate_id=str(line.product_id),
-            payload={
-                "order_id": str(order.id),
-                "quantity": str(line.ordered_qty),
-                "reserved": str(balance.reserved),
-                "available": str(balance.on_hand - balance.reserved),
-            },
-        )
+                payload={
+                    "product_id": str(line.product_id),
+                    "quantity": str(line.ordered_qty),
+                    "warehouses": [
+                        str(balance.warehouse_id) for balance in balances if balance.reserved > 0
+                    ],
+                },
+            )
     order.status = "CONFIRMED"
     await db.flush()
     record_audit(
@@ -387,6 +404,46 @@ async def _default_warehouse(db: AsyncSession, organization_id: str, product: Pr
     return warehouse
 
 
+async def _product_balances_locked(
+    db: AsyncSession,
+    *,
+    organization_id: str,
+    product_id: str,
+    default_warehouse_id: str,
+) -> list[InventoryBalance]:
+    """返回商品全部仓库余额（行锁），默认仓排在最前，支持跨仓分配。"""
+
+    balances = list(
+        (
+            await db.execute(
+                select(InventoryBalance)
+                .where(
+                    InventoryBalance.organization_id == uuid.UUID(organization_id),
+                    InventoryBalance.product_id == uuid.UUID(product_id),
+                )
+                .with_for_update()
+                .order_by(InventoryBalance.created_at)
+            )
+        ).scalars().all()
+    )
+    if not balances:
+        balances = [
+            await get_balance_locked(
+                db,
+                organization_id=organization_id,
+                product_id=product_id,
+                warehouse_id=default_warehouse_id,
+            )
+        ]
+    balances.sort(
+        key=lambda balance: (
+            balance.warehouse_id != uuid.UUID(default_warehouse_id),
+            balance.created_at,
+        )
+    )
+    return list(balances)
+
+
 async def _incoming_before(
     db: AsyncSession,
     organization_id: str,
@@ -404,7 +461,7 @@ async def _incoming_before(
     )
     if deadline is not None:
         stmt = stmt.where(
-            (PurchaseOrderLine.expected_at <= deadline) | (PurchaseOrder.expected_at <= deadline)
+            func.coalesce(PurchaseOrderLine.expected_at, PurchaseOrder.expected_at) <= deadline
         )
     lines = (await db.execute(stmt)).scalars().all()
     return sum((line.ordered_qty - line.received_qty for line in lines), Decimal("0"))
@@ -470,50 +527,81 @@ async def fulfill_order(
         product = await db.get(Product, line.product_id)
         if product is None:
             raise NotFoundError("商品不存在")
-        warehouse = await _default_warehouse(db, organization_id, product)
-        balance = await get_balance_locked(
-            db,
-            organization_id=organization_id,
-            product_id=str(line.product_id),
-            warehouse_id=str(warehouse.id),
-        )
-        if balance.on_hand < qty:
-            raise InsufficientStockError(
-                "实物库存不足",
-                details={"on_hand": str(balance.on_hand), "requested": str(qty)},
-            )
-
-        movements, unit_cost = await _consume_lots(
-            db,
-            organization_id=organization_id,
-            product_id=str(line.product_id),
-            warehouse_id=str(warehouse.id),
-            quantity=qty,
-            actor_id=actor_id,
-            delivery_id=str(delivery.id),
-        )
-        balance.on_hand -= qty
-        balance.reserved -= qty
-        balance.version += 1
-        line.reserved_qty -= qty
-        line.delivered_qty += qty
-
-        reservation = (
+        reservations = (
             await db.execute(
                 select(InventoryReservation)
                 .where(
                     InventoryReservation.sales_order_line_id == line.id,
                     InventoryReservation.status == "ACTIVE",
                 )
+                .order_by(InventoryReservation.created_at)
                 .with_for_update()
             )
-        ).scalars().first()
-        if reservation is not None:
-            reservation.quantity -= qty
+        ).scalars().all()
+        remaining_to_ship = qty
+        all_movements: list[StockMovement] = []
+        weighted_value = Decimal("0")
+        costed_qty = Decimal("0")
+        shipped_events: list[dict] = []
+        for reservation in reservations:
+            if remaining_to_ship <= 0:
+                break
+            take = min(reservation.quantity, remaining_to_ship)
+            if take <= 0:
+                continue
+            warehouse_id = str(reservation.warehouse_id)
+            balance = await get_balance_locked(
+                db,
+                organization_id=organization_id,
+                product_id=str(line.product_id),
+                warehouse_id=warehouse_id,
+            )
+            if balance.on_hand < take:
+                raise InsufficientStockError(
+                    "实物库存不足",
+                    details={"warehouse_id": warehouse_id, "on_hand": str(balance.on_hand), "requested": str(take)},
+                )
+            movements, unit_cost = await _consume_lots(
+                db,
+                organization_id=organization_id,
+                product_id=str(line.product_id),
+                warehouse_id=warehouse_id,
+                quantity=take,
+                actor_id=actor_id,
+                delivery_id=str(delivery.id),
+            )
+            balance.on_hand -= take
+            balance.reserved -= take
+            balance.version += 1
+            reservation.quantity -= take
             if reservation.quantity <= 0:
                 reservation.status = "CONSUMED"
+            remaining_to_ship -= take
+            all_movements.extend(movements)
+            if unit_cost is not None:
+                weighted_value += take * unit_cost
+                costed_qty += take
+            shipped_events.append(
+                {
+                    "warehouse_id": warehouse_id,
+                    "quantity": str(take),
+                    "on_hand": str(balance.on_hand),
+                    "reserved": str(balance.reserved),
+                }
+            )
+        if remaining_to_ship > 0:
+            raise InsufficientStockError(
+                "交付数量超过可用预留",
+                details={"sales_order_line_id": str(line.id), "shortage": str(remaining_to_ship)},
+            )
+        line.reserved_qty -= qty
+        line.delivered_qty += qty
 
-        snapshot_cost = unit_cost
+        snapshot_cost = (
+            (weighted_value / qty).quantize(Decimal("0.0001"))
+            if costed_qty == qty and qty > 0
+            else None
+        )
         if snapshot_cost is None:
             avg = await latest_snapshot(
                 db, organization_id=organization_id, product_id=str(line.product_id), price_type="WEIGHTED_AVG_COST"
@@ -525,7 +613,7 @@ async def fulfill_order(
                 sales_order_line_id=line.id,
                 product_id=line.product_id,
                 quantity=qty,
-                stock_movement_id=movements[0].id if movements else None,
+                stock_movement_id=all_movements[0].id if all_movements else None,
                 unit_cost_snapshot=snapshot_cost,
                 unit_sell_price_snapshot=line.unit_sell_price,
             )
@@ -540,8 +628,7 @@ async def fulfill_order(
                 "order_id": str(order.id),
                 "delivery_id": str(delivery.id),
                 "quantity": str(qty),
-                "on_hand": str(balance.on_hand),
-                "reserved": str(balance.reserved),
+                "warehouses": shipped_events,
             },
         )
 
@@ -679,18 +766,6 @@ async def cancel_order(
     for line in lines:
         if line.reserved_qty <= 0:
             continue
-        product = await db.get(Product, line.product_id)
-        if product is None:
-            raise NotFoundError("商品不存在")
-        warehouse = await _default_warehouse(db, organization_id, product)
-        balance = await get_balance_locked(
-            db,
-            organization_id=organization_id,
-            product_id=str(line.product_id),
-            warehouse_id=str(warehouse.id),
-        )
-        balance.reserved -= line.reserved_qty
-        balance.version += 1
         reservations = (
             await db.execute(
                 select(InventoryReservation).where(
@@ -702,6 +777,14 @@ async def cancel_order(
         ).scalars().all()
         now = datetime.now(UTC)
         for reservation in reservations:
+            balance = await get_balance_locked(
+                db,
+                organization_id=organization_id,
+                product_id=str(line.product_id),
+                warehouse_id=str(reservation.warehouse_id),
+            )
+            balance.reserved -= reservation.quantity
+            balance.version += 1
             reservation.status = "RELEASED"
             reservation.released_at = now
             reservation.quantity = Decimal("0")
@@ -715,7 +798,6 @@ async def cancel_order(
             payload={
                 "order_id": str(order.id),
                 "quantity": str(line.ordered_qty - line.delivered_qty),
-                "reserved": str(balance.reserved),
             },
         )
     order.status = "CANCELLED"

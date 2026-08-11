@@ -136,6 +136,10 @@ GET  /api/v1/events/stream
 GET  /api/v1/events
 ```
 
+商品识别支持 `barcode` / `text` / `image_data_url`；视觉 Provider 需输出结构化 JSON
+（`sku_candidates` / `model` / `barcode` / `keywords`），由 resolver 二次匹配；
+条码精确命中才可自动高置信确认，图片/文本结果始终要求人工确认。
+
 ## Dashboard
 
 ```text

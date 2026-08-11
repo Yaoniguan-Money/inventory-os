@@ -112,9 +112,11 @@ async def get_document(
 
 
 async def document_detail(
-    db: AsyncSession, *, organization_id: str, document_id: str
+    db: AsyncSession, *, organization_id: str, document_id: str, user_role: str
 ) -> dict:
     doc = await get_document(db, organization_id=organization_id, document_id=document_id)
+    if doc.access_scope == "OWNER" and user_role not in ("OWNER", "ADMIN"):
+        raise NotFoundError("知识文档不存在")
     latest_version = (
         await db.execute(
             select(KnowledgeDocumentVersion)

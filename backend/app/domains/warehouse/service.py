@@ -126,7 +126,16 @@ async def receive_stock(
     balance = await get_balance_locked(
         db, organization_id=organization_id, product_id=product_id, warehouse_id=warehouse_id
     )
-    old_on_hand = balance.on_hand
+    all_balances = (
+        await db.execute(
+            select(InventoryBalance).where(
+                InventoryBalance.organization_id == uuid.UUID(organization_id),
+                InventoryBalance.product_id == uuid.UUID(product_id),
+            )
+        )
+    ).scalars().all()
+    # 价格快照是 SKU 全局的，入库前的 old_on_hand 必须聚合全仓库存。
+    old_on_hand = sum((b.on_hand for b in all_balances), Decimal("0"))
     old_avg = Decimal("0")
     if unit_cost is not None:
         old_snapshot = await latest_snapshot(
@@ -283,6 +292,16 @@ async def adjust_stock(
                 "adjustment": str(quantity),
             },
         )
+    if new_on_hand < balance.reserved:
+        raise InsufficientStockError(
+            "调整后可用库存不能为负（已预留库存不可挪用）",
+            details={
+                "on_hand": str(balance.on_hand),
+                "reserved": str(balance.reserved),
+                "available": str(balance.on_hand - balance.reserved),
+                "adjustment": str(quantity),
+            },
+        )
     before = {"on_hand": str(balance.on_hand), "version": balance.version}
     balance.on_hand = new_on_hand
     balance.version += 1
@@ -349,10 +368,15 @@ async def issue_stock(
     balance = await get_balance_locked(
         db, organization_id=organization_id, product_id=product_id, warehouse_id=warehouse_id
     )
-    if balance.on_hand < quantity:
+    if balance.on_hand - balance.reserved < quantity:
         raise InsufficientStockError(
-            "库存不足，无法出库",
-            details={"on_hand": str(balance.on_hand), "requested": str(quantity)},
+            "可用库存不足，无法出库（已预留库存不可挪用）",
+            details={
+                "on_hand": str(balance.on_hand),
+                "reserved": str(balance.reserved),
+                "available": str(balance.on_hand - balance.reserved),
+                "requested": str(quantity),
+            },
         )
     lots = (
         await db.execute(

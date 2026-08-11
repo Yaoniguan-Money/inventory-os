@@ -6,7 +6,7 @@ import uuid
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.audit import record_audit
@@ -317,7 +317,7 @@ async def incoming_for_product(
     )
     if before is not None:
         stmt = stmt.where(
-            (PurchaseOrderLine.expected_at <= before) | (PurchaseOrder.expected_at <= before)
+                func.coalesce(PurchaseOrderLine.expected_at, PurchaseOrder.expected_at) <= before
         )
     lines = (await db.execute(stmt)).scalars().all()
     return sum((line.ordered_qty - line.received_qty for line in lines), Decimal("0"))
@@ -415,7 +415,7 @@ async def workbench(db: AsyncSession, *, organization_id: str) -> list[dict]:
                     SalesOrder.organization_id == uuid.UUID(organization_id),
                     SalesOrderLine.product_id == product.id,
                     SalesOrder.status.in_(["CONFIRMED", "PARTIAL"]),
-                    (SalesOrderLine.required_at <= horizon) | (SalesOrder.required_at <= horizon),
+                func.coalesce(SalesOrderLine.required_at, SalesOrder.required_at) <= horizon,
                 )
             )
         ).scalars().all()

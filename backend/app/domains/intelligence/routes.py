@@ -30,7 +30,11 @@ async def ai_capabilities(
     user: CurrentUser = Depends(require_scope("ai:read")),
 ) -> dict:
     provider = get_ai_provider()
-    return {"provider": provider.name, "capability": provider.capability.__dict__}
+    return {
+        "provider": provider.name,
+        "enabled": provider.capability.supports_text,
+        "capability": provider.capability.__dict__,
+    }
 
 
 @router.post("/ai/chat", response_model=ChatResponse)
