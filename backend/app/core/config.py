@@ -25,7 +25,7 @@ class Settings(BaseSettings):
 
     demo_org_name: str = "华东精密制造有限公司"
     demo_org_slug: str = "huadong-precision"
-    demo_admin_email: str = "admin@inventoryos.local"
+    demo_admin_email: str = "admin@inventoryos.dev"
     demo_admin_password: str = "Demo@12345"
 
     ai_provider: str = "demo"
