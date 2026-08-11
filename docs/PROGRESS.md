@@ -130,6 +130,75 @@
 
 **下一步**：前端业务 UI（Phase 8）。
 
+## Phase 8 — Frontend Business UI
+
+**已完成**
+
+- React 19 + TS + Vite + Tailwind v4 + TanStack Query + React Router + GSAP + ECharts 依赖就绪。
+- 深色经营驾驶舱视觉；红色仅表示风险；关键数字 tabular-nums；数字变化 200~500ms GSAP 动效且尊重 `prefers-reduced-motion`。
+- 页面：登录、经营驾驶舱、商品中心、商品详情（旗舰页）、订单中心/详情、仓库中心、采购中心、市场行情、风险中心、设备维护/详情、企业知识库、员工助手、集成与设置。
+- SSE 客户端：收到 `inventory.*`/`orders.*`/`price.*`/`market.*`/`health.*` 等事件后精准 invalidate query，REST 重新拉取权威状态。
+- 商品详情一页含：库存指标、企业价格、外部市场、订单履约、批次、风险告警（可 AI 解释）、时间线。
+- 前端测试：Vitest 5 项（format、UI primitives）；typecheck / lint / build 通过。
+
+## Phase 8.5（前端）— Equipment + Knowledge UI
+
+**已完成**
+
+- 设备列表/详情：点检、故障记录、维修记录、AI 诊断（含引用与免责声明）。
+- 知识库：文档列表、新建（自动分块）、权限过滤检索、来源引用。
+- 员工助手聊天页：问题 → 权限过滤 → 知识检索 → 业务 Tool → 证据回答。
+
+## Phase 9（前端）— AI 能力入口
+
+**已完成**
+
+- 员工助手、告警解释、商品识别（条码自动确认/文本需确认）、AI capability 展示。
+- 无 AI Key 时全系统正常运行（DemoAIProvider 明确标记）。
+
+## Phase 10 — Demo / E2E / Polish
+
+**已完成**
+
+- Demo seed（幂等）：10 个 SKU（A001 订单压力 / A002 积压 / A003 临期 / A004 健康 + 6 个常规）、5 个订单（已完成/部分/未交付）、1 张采购在途、市场行情、设备 E-07、知识文档。
+- `app/scripts/reset_e2e.py`：一键重建 e2e 数据库并 seed。
+- Playwright 核心链路 E2E 通过：登录 → 打开商品 A → 创建订单 → 确认 → 查看 Reserved/Available 变化 → 部分交付 → PARTIAL → 商品时间线 → 库存风险。
+- README / DEMO / API 文档补全；`.env.example` 补充 Market/HTTP/RSS 配置。
+- 代码已提交并推送至 GitHub 私有仓库：https://github.com/Yaoniguan-Money/inventory-os
+
+## Definition of Done 核对
+
+- [x] private repo 创建：https://github.com/Yaoniguan-Money/inventory-os
+- [x] 两组 Skills 已安装到仓库级 `.agents/skills`（GSAP 8 个 + Matt Pocock engineering 17 个）
+- [x] 后端可启动（uvicorn，E2E 实测）
+- [x] 前端可启动（vite dev，E2E 实测）
+- [x] PostgreSQL migration 一键执行（`alembic upgrade head`，`alembic check` 无漂移）
+- [x] seed 一键执行（幂等）
+- [x] 可登录；有 organization + role
+- [x] 可创建 SKU；可入库；可记录单位购入价；可查看批次、库位、流水
+- [x] 可创建订单；确认占用库存；部分交付；全部交付；取消释放占用
+- [x] 可创建采购订单；有 Incoming；采购到货进入库存
+- [x] 最近采购价 / 移动平均成本 / 目标售价 / 订单实际成交价
+- [x] Market Buy / Sell，来源与更新时间
+- [x] 库存健康规则 + 可解释 evidence
+- [x] 商品详情一页联动；Dashboard 整体风险
+- [x] 外部系统 API Key + HTTP/JSON 接入，事件幂等；SSE 断点恢复
+- [x] AI 无 Key 不影响核心业务；AI 不直接修改库存账
+- [x] 设备档案/点检/故障/维修；故障诊断带来源；备件关联 SKU 库存
+- [x] 知识库录入/检索/权限过滤/引用；员工助手查询知识与业务数据
+- [x] 采购中心统一视图（库存/在途/需求/历史采购价/供应商/行情）
+- [x] ForecastProvider / capability / API 存在且 disabled；UI 无伪预测
+- [x] 未实现面向客户客服助手
+- [x] 权限测试、核心库存/订单测试通过（pytest 48 项）
+- [x] Playwright 核心链路通过
+- [x] CI 工作流已配置；本地等价检查（ruff/mypy/pytest/build/typecheck/lint/test）全绿，推送后由 GitHub Actions 验证
+- [x] docs/PROGRESS.md 处于最终完成状态
+- [x] README 可让新机器独立跑起来
+
+## BLOCKERS
+
+无。外部 Provider（市场、AI）按计划以明确标记的 Mock/Demo Provider 运行，接口与数据模型保持可替换；接入真实 Key 即可启用。
+
 ## BLOCKERS
 
 无。
