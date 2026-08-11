@@ -62,6 +62,8 @@ async def refresh_market(db: AsyncSession, *, organization_id: str) -> dict:
                         source=quote.source,
                         source_url=quote.source_url,
                         region=quote.region,
+                        unit=quote.unit,
+                        basis=quote.basis,
                         observed_at=quote.observed_at,
                         fetched_at=datetime.now(UTC),
                         raw_payload=quote.raw_payload,

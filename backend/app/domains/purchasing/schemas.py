@@ -80,6 +80,8 @@ class WorkbenchItem(BaseModel):
     on_hand: Decimal
     reserved: Decimal
     available: Decimal
+    expired_qty: Decimal = Decimal("0")
+    projected: Decimal = Decimal("0")
     incoming: Decimal
     demand_7d: Decimal
     shortage_7d: Decimal

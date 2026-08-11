@@ -35,10 +35,11 @@ const checkScript = [
   '            print("SEED_CHECK user=", u.email, "password_ok=", verify_password(settings.demo_admin_password, u.password_hash))',
   'asyncio.run(main())',
 ].join('\n')
-const check = spawnSync('uv', ['run', 'python', '-c', checkScript], {
+const check = spawnSync('uv', ['run', 'python', '-'], {
   cwd: backendDir,
-  stdio: 'inherit',
+  stdio: ['pipe', 'inherit', 'inherit'],
   shell,
+  input: checkScript,
 })
 if (check.status !== 0) {
   process.exit(check.status ?? 1)

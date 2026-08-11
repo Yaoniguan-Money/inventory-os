@@ -15,6 +15,8 @@ class QuoteData:
     source: str
     region: str
     observed_at: datetime
+    unit: str | None = None
+    basis: str | None = None
     source_url: str | None = None
     raw_payload: dict | None = None
 

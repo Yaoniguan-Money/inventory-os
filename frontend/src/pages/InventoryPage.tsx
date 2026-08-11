@@ -24,6 +24,8 @@ interface Balance {
   reserved: string
   available: string
   incoming: string
+  expired_qty: string
+  projected: string
   default_location_code: string | null
   health_status: string
   last_receipt_at: string | null
@@ -114,6 +116,7 @@ export default function InventoryPage() {
                 <th className="px-4 py-2.5 text-right">Reserved</th>
                 <th className="px-4 py-2.5 text-right">Available</th>
                 <th className="px-4 py-2.5 text-right">Incoming</th>
+                <th className="px-4 py-2.5 text-right">Projected</th>
                 <th className="px-4 py-2.5">默认库位</th>
                 <th className="px-4 py-2.5">健康状态</th>
                 <th className="px-4 py-2.5">最近入库</th>
@@ -134,6 +137,7 @@ export default function InventoryPage() {
                   <td className="tabular px-4 py-2.5 text-right text-amber-300">{fmtQty(b.reserved)}</td>
                   <td className="tabular px-4 py-2.5 text-right text-sky-300">{fmtQty(b.available)}</td>
                   <td className="tabular px-4 py-2.5 text-right text-emerald-300">{fmtQty(b.incoming)}</td>
+                  <td className="tabular px-4 py-2.5 text-right text-violet-300">{fmtQty(b.projected)}</td>
                   <td className="px-4 py-2.5 text-slate-400">{b.default_location_code ?? '—'}</td>
                   <td className="px-4 py-2.5">
                     <Badge tone={b.health_status === 'HIGH' ? 'red' : b.health_status === 'WARN' ? 'amber' : 'green'}>

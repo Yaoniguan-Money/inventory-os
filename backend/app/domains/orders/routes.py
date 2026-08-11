@@ -4,7 +4,7 @@ import uuid
 from datetime import UTC, datetime
 
 from fastapi import APIRouter, Depends, Query
-from sqlalchemy import select
+from sqlalchemy import exists, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.database import get_db
@@ -89,15 +89,28 @@ async def list_orders(
         stmt = stmt.join(
             SalesOrderLine, SalesOrderLine.sales_order_id == SalesOrder.id
         ).where(SalesOrderLine.product_id == uuid.UUID(product_id))
+    line_due = func.coalesce(SalesOrderLine.required_at, SalesOrder.required_at)
+    has_line_due_before = lambda cutoff: exists(  # noqa: E731
+        select(1).where(
+            SalesOrderLine.sales_order_id == SalesOrder.id,
+            line_due <= cutoff,
+        )
+    )
+    has_line_due_after = lambda cutoff: exists(  # noqa: E731
+        select(1).where(
+            SalesOrderLine.sales_order_id == SalesOrder.id,
+            line_due >= cutoff,
+        )
+    )
     if overdue:
         stmt = stmt.where(
             SalesOrder.status.in_(["CONFIRMED", "PARTIAL"]),
-            SalesOrder.required_at < datetime.now(UTC),
+            has_line_due_before(datetime.now(UTC)),
         )
     if due_from:
-        stmt = stmt.where(SalesOrder.required_at >= due_from)
+        stmt = stmt.where(has_line_due_after(due_from))
     if due_to:
-        stmt = stmt.where(SalesOrder.required_at <= due_to)
+        stmt = stmt.where(has_line_due_before(due_to))
     orders = (
         await db.execute(stmt.order_by(SalesOrder.required_at, SalesOrder.ordered_at.desc()))
     ).scalars().all()

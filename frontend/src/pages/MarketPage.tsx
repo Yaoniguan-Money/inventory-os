@@ -20,6 +20,8 @@ interface MarketData {
     currency: string
     source: string
     region: string
+    unit: string | null
+    basis: string | null
     observed_at: string
   }>
   events: Array<{ id: string; title: string; summary: string | null; source: string; published_at: string }>
@@ -117,7 +119,12 @@ export default function MarketPage() {
                   <div key={q.id} className="flex items-center justify-between rounded-lg border border-slate-800 bg-slate-900/60 px-3 py-2">
                     <div>
                       <div className="text-sm text-slate-300">
-                        {q.quote_kind === 'MARKET_BUY' ? '市场采购价' : '市场常见售价'} · {q.region}
+                        {q.basis === 'FX'
+                          ? '汇率参考（外汇环境）'
+                          : q.quote_kind === 'MARKET_BUY'
+                            ? '市场采购价'
+                            : '市场常见售价'}{' '}
+                        · {q.region}
                       </div>
                       <div className="text-xs text-slate-500">
                         {q.source} · {fmtDate(q.observed_at)}

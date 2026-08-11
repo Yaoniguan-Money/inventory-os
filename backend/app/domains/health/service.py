@@ -17,6 +17,7 @@ from app.domains.orders.models import SalesOrder, SalesOrderLine
 from app.domains.pricing.models import InternalPriceSnapshot
 from app.domains.purchasing.models import PurchaseOrder, PurchaseOrderLine
 from app.domains.warehouse.models import InventoryBalance, InventoryLot, StockMovement
+from app.domains.warehouse.service import expired_lot_quantity
 
 SEVERITY_ORDER = {"CRITICAL": 0, "HIGH": 1, "MEDIUM": 2, "LOW": 3, "INFO": 4}
 
@@ -159,7 +160,10 @@ async def recalculate_product(
     ).scalars().all()
     on_hand = sum((b.on_hand for b in balances), Decimal("0"))
     reserved = sum((b.reserved for b in balances), Decimal("0"))
-    available = on_hand - reserved
+    expired_qty = await expired_lot_quantity(
+        db, organization_id=organization_id, product_id=pid
+    )
+    available = max(on_hand - reserved - expired_qty, Decimal("0"))
 
     # 1) STOCKOUT_RISK: 只对“尚未被预留覆盖”的到期需求计算缺口。
     #    已确认订单的需求已体现在 reserved 中，不应再与 available 重复扣减。
@@ -214,6 +218,7 @@ async def recalculate_product(
             evidence={
                 "horizon_days": settings.health_horizon_days,
                 "available": str(available),
+                "expired_qty": str(expired_qty),
                 "due_demand": str(due_demand),
                 "reserved_for_due": str(reserved_for_due),
                 "unreserved_due": str(unreserved_due),
@@ -242,7 +247,6 @@ async def recalculate_product(
         )
     ).scalars().all()
     shipped_30 = sum((-m.quantity for m in shipments if m.occurred_at >= since_30), Decimal("0"))
-    shipped_90 = sum((-m.quantity for m in shipments), Decimal("0"))
     if shipped_30 > 0 and available > 0:
         daily_rate = shipped_30 / Decimal("30")
         days_of_cover = available / daily_rate
@@ -262,7 +266,9 @@ async def recalculate_product(
                 },
             )
             evaluated.add("OVERSTOCK")
-    if available > 0 and shipped_90 == 0:
+    since_dormant = now - timedelta(days=settings.health_dormant_days)
+    shipped_since_dormant = any(m.occurred_at >= since_dormant for m in shipments)
+    if available > 0 and not shipped_since_dormant:
         await _upsert_alert(
             db,
             organization_id=organization_id,
@@ -273,7 +279,9 @@ async def recalculate_product(
             evidence={
                 "dormant_days": settings.health_dormant_days,
                 "available": str(available),
-                "shipped_90d": "0",
+                "last_shipment_at": (
+                    max(m.occurred_at for m in shipments).isoformat() if shipments else None
+                ),
             },
         )
         evaluated.add("DORMANT_STOCK")
@@ -298,16 +306,21 @@ async def recalculate_product(
     expiring = [
         lot
         for lot in lots
-        if lot.expires_at is not None and now <= lot.expires_at <= now + timedelta(days=settings.health_expiry_days)
+        if lot.expires_at is not None and lot.expires_at <= now + timedelta(days=settings.health_expiry_days)
     ]
     if expiring:
+        has_expired = any(lot.expires_at is not None and lot.expires_at < now for lot in expiring)
         await _upsert_alert(
             db,
             organization_id=organization_id,
             product_id=pid,
             alert_type="EXPIRY_RISK",
-            severity="HIGH",
-            title=f"{len(expiring)} 个批次将在 {settings.health_expiry_days} 日内到期",
+            severity="CRITICAL" if has_expired else "HIGH",
+            title=(
+                f"{sum(1 for lot in expiring if lot.expires_at is not None and lot.expires_at < now)} 个批次已过期"
+                if has_expired
+                else f"{len(expiring)} 个批次将在 {settings.health_expiry_days} 日内到期"
+            ),
             evidence={
                 "expiry_days": settings.health_expiry_days,
                 "lots": [
@@ -316,6 +329,7 @@ async def recalculate_product(
                         "lot_code": lot.lot_code,
                         "quantity": str(lot.quantity_remaining),
                         "expires_at": lot.expires_at.isoformat() if lot.expires_at else None,
+                        "expired": lot.expires_at is not None and lot.expires_at < now,
                     }
                     for lot in expiring
                 ],
@@ -327,13 +341,23 @@ async def recalculate_product(
 
     # 5) ORDER_FULFILLMENT_RISK: 剩余量 > 该行已预留量 + 期限前可到货在途
     order_risks: list[dict] = []
-    for line, order in demand_rows:
+    demand_sorted = sorted(
+        demand_rows,
+        key=lambda pair: (
+            (pair[0].required_at or pair[1].required_at) is None,
+            pair[0].required_at or pair[1].required_at or datetime.max.replace(tzinfo=UTC),
+        ),
+    )
+    incoming_pool = incoming_before_due
+    for line, order in demand_sorted:
         remaining = line.ordered_qty - line.delivered_qty
         deadline = line.required_at or order.required_at
         incoming_for_line = await _incoming_before(
             db, organization_id, str(line.product_id), deadline
         )
-        if remaining > 0 and remaining > line.reserved_qty + incoming_for_line:
+        allocated_incoming = min(incoming_for_line, incoming_pool)
+        incoming_pool -= allocated_incoming
+        if remaining > 0 and remaining > line.reserved_qty + allocated_incoming:
             order_risks.append(
                 {
                     "order_id": str(order.id),
@@ -342,6 +366,7 @@ async def recalculate_product(
                     "remaining": str(remaining),
                     "reserved": str(line.reserved_qty),
                     "incoming_before_deadline": str(incoming_for_line),
+                    "allocated_incoming": str(allocated_incoming),
                 }
             )
     if order_risks:
@@ -388,7 +413,13 @@ async def recalculate_product(
             .limit(1)
         )
     ).scalar_one_or_none()
-    if avg_snapshot and market_buy and avg_snapshot.price > 0:
+    if (
+        avg_snapshot
+        and market_buy
+        and avg_snapshot.price > 0
+        and (market_buy.unit is None or market_buy.unit == product.unit)
+        and (market_buy.basis is None or market_buy.basis != "FX")
+    ):
         ratio = (avg_snapshot.price - market_buy.price) / avg_snapshot.price
         if ratio > Decimal("0.1"):
             await _upsert_alert(

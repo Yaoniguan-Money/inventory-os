@@ -15,6 +15,7 @@ from app.domains.orders.models import Customer, SalesOrder, SalesOrderLine
 from app.domains.pricing.models import InternalPriceSnapshot
 from app.domains.purchasing.models import PurchaseOrder, PurchaseOrderLine
 from app.domains.warehouse.models import InventoryBalance
+from app.domains.warehouse.service import expired_lot_quantity
 
 
 async def _latest_price(
@@ -108,42 +109,66 @@ async def dashboard(db: AsyncSession, *, organization_id: str) -> dict:
             )
         )
     ).all()
-    orders_due = sum(
-        1
-        for order, _ in orders
-        if order.required_at is not None and order.required_at <= horizon
-    )
-    at_risk_orders = 0
-    upcoming: list[dict] = []
+    order_rows: list[tuple] = []
+    due_lines: list[tuple[SalesOrderLine, SalesOrder]] = []
     for order, customer in orders:
         lines = (
             await db.execute(
                 select(SalesOrderLine).where(SalesOrderLine.sales_order_id == order.id)
             )
         ).scalars().all()
-        order_risk = False
+        line_dates = [
+            line.required_at for line in lines if line.required_at is not None
+        ]
+        effective_due = min(line_dates) if line_dates else order.required_at
         remaining_total = Decimal("0")
         for line in lines:
             remaining = line.ordered_qty - line.delivered_qty
             remaining_total += remaining
-            if remaining <= 0:
-                continue
-            product_balances = by_product.get(str(line.product_id), [])
-            available = sum((b.on_hand - b.reserved for b in product_balances), Decimal("0"))
-            deadline = line.required_at or order.required_at
-            incoming = await _incoming_before(
-                db, organization_id, str(line.product_id), deadline
+            if remaining > 0:
+                due_lines.append((line, order))
+        order_rows.append((order, customer, effective_due, remaining_total))
+
+    orders_due = sum(
+        1 for _, _, effective_due, _ in order_rows
+        if effective_due is not None and effective_due <= horizon
+    )
+
+    # ATP：同一商品的 incoming 按截止时间顺序分配，防止被多个订单重复“借用”。
+    incoming_pools: dict[str, Decimal] = {}
+    risky_order_ids: set[str] = set()
+    sorted_due_lines = sorted(
+        due_lines,
+        key=lambda pair: (
+            (pair[0].required_at or pair[1].required_at) is None,
+            pair[0].required_at or pair[1].required_at or datetime.max.replace(tzinfo=UTC),
+        ),
+    )
+    for line, order in sorted_due_lines:
+        product_id = str(line.product_id)
+        if product_id not in incoming_pools:
+            incoming_pools[product_id] = await _incoming_before(
+                db, organization_id, product_id, horizon
             )
-            if remaining > line.reserved_qty + incoming:
-                order_risk = True
-        if order_risk:
-            at_risk_orders += 1
+        deadline = line.required_at or order.required_at
+        incoming_before_deadline = await _incoming_before(
+            db, organization_id, product_id, deadline
+        )
+        allocated = min(incoming_before_deadline, incoming_pools[product_id])
+        incoming_pools[product_id] -= allocated
+        remaining = line.ordered_qty - line.delivered_qty
+        if remaining > line.reserved_qty + allocated:
+            risky_order_ids.add(str(order.id))
+    at_risk_orders = len(risky_order_ids)
+
+    upcoming: list[dict] = []
+    for order, customer, effective_due, remaining_total in order_rows:
         upcoming.append(
             {
                 "id": str(order.id),
                 "order_no": order.order_no,
                 "customer_name": customer.name,
-                "required_at": order.required_at,
+                "required_at": effective_due,
                 "status": order.status,
                 "remaining_total": str(remaining_total),
             }
@@ -159,7 +184,13 @@ async def dashboard(db: AsyncSession, *, organization_id: str) -> dict:
     pressure_7d: list[dict] = []
     for product in products:
         product_balances = by_product.get(str(product.id), [])
-        available = sum((b.on_hand - b.reserved for b in product_balances), Decimal("0"))
+        expired_qty = await expired_lot_quantity(
+            db, organization_id=organization_id, product_id=str(product.id)
+        )
+        available = max(
+            sum((b.on_hand - b.reserved for b in product_balances), Decimal("0")) - expired_qty,
+            Decimal("0"),
+        )
         demand_rows = (
             await db.execute(
                 select(SalesOrderLine, SalesOrder)
@@ -195,6 +226,7 @@ async def dashboard(db: AsyncSession, *, organization_id: str) -> dict:
                     "reserved_for_due": str(reserved_for_due),
                     "unreserved_due": str(unreserved_due),
                     "available": str(available),
+                    "expired_qty": str(expired_qty),
                     "incoming": str(incoming),
                     "shortage": str(shortage),
                 }

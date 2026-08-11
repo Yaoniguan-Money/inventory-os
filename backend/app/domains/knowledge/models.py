@@ -4,7 +4,17 @@ import uuid
 from datetime import datetime
 from typing import Any
 
-from sqlalchemy import JSON, DateTime, ForeignKey, Integer, String, Text, Uuid, func
+from sqlalchemy import (
+    JSON,
+    CheckConstraint,
+    DateTime,
+    ForeignKey,
+    Integer,
+    String,
+    Text,
+    Uuid,
+    func,
+)
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.core.database import Base
@@ -13,6 +23,12 @@ from app.core.mixins import OrgScopedMixin, TimestampMixin, UUIDPrimaryKeyMixin
 
 class KnowledgeDocument(UUIDPrimaryKeyMixin, OrgScopedMixin, TimestampMixin, Base):
     __tablename__ = "knowledge_documents"
+    __table_args__ = (
+        CheckConstraint(
+            "access_scope IN ('ORG', 'OWNER')",
+            name="ck_knowledge_documents_access_scope",
+        ),
+    )
 
     title: Mapped[str] = mapped_column(String(300), nullable=False)
     document_type: Mapped[str] = mapped_column(String(40), nullable=False, default="SOP")

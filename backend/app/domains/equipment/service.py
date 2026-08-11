@@ -23,8 +23,7 @@ from app.domains.knowledge.models import (
     KnowledgeDocumentVersion,
     KnowledgeEntityLink,
 )
-from app.domains.warehouse.models import Warehouse
-from app.domains.warehouse.service import issue_stock
+from app.domains.warehouse.service import allocate_issue
 
 
 async def get_equipment(
@@ -205,33 +204,23 @@ async def add_maintenance(
     await db.flush()
     usages: list[MaintenancePartUsage] = []
     for part in payload.parts:
-        warehouse = (
-            await db.execute(
-                select(Warehouse)
-                .where(Warehouse.organization_id == uuid.UUID(organization_id))
-                .order_by(Warehouse.created_at)
-                .limit(1)
-            )
-        ).scalar_one_or_none()
-        if warehouse is None:
-            raise NotFoundError("尚未创建仓库，无法领用备件")
-        _, movements = await issue_stock(
+        allocations = await allocate_issue(
             db,
             organization_id=organization_id,
             actor_id=actor_id,
             product_id=str(part.product_id),
-            warehouse_id=str(warehouse.id),
             quantity=part.quantity,
             reason=f"设备维修领用 {equipment.asset_code}",
             reference_type="MAINTENANCE",
             reference_id=str(maintenance.id),
         )
+        first_movement = allocations[0][1][0] if allocations and allocations[0][1] else None
         usage = MaintenancePartUsage(
             organization_id=uuid.UUID(organization_id),
             maintenance_record_id=maintenance.id,
             product_id=part.product_id,
             quantity=part.quantity,
-            stock_movement_id=movements[0].id if movements else None,
+            stock_movement_id=first_movement.id if first_movement else None,
         )
         db.add(usage)
         usages.append(usage)
@@ -301,14 +290,30 @@ async def diagnose_equipment(
     citations: list[dict] = []
     excerpts: list[str] = []
     if doc_ids:
-        versions = (
+        docs = (
             await db.execute(
-                select(KnowledgeDocumentVersion, KnowledgeDocument)
-                .join(KnowledgeDocument, KnowledgeDocument.id == KnowledgeDocumentVersion.document_id)
-                .where(KnowledgeDocument.id.in_(list(doc_ids)))
+                select(KnowledgeDocument).where(KnowledgeDocument.id.in_(list(doc_ids)))
             )
-        ).all()
-        version_ids = [v.id for v, _ in versions]
+        ).scalars().all()
+        doc_titles = {doc.id: doc.title for doc in docs}
+        all_versions = (
+            await db.execute(
+                select(KnowledgeDocumentVersion)
+                .where(KnowledgeDocumentVersion.document_id.in_(list(doc_ids)))
+                .order_by(
+                    KnowledgeDocumentVersion.document_id,
+                    KnowledgeDocumentVersion.version.desc(),
+                )
+            )
+        ).scalars().all()
+        latest_by_doc: dict[uuid.UUID, KnowledgeDocumentVersion] = {}
+        for version in all_versions:
+            latest_by_doc.setdefault(version.document_id, version)
+        version_ids = [version.id for version in latest_by_doc.values()]
+        doc_by_version = {
+            version.id: doc_titles.get(version.document_id, "文档")
+            for version in latest_by_doc.values()
+        }
         chunks = (
             await db.execute(
                 select(KnowledgeChunk).where(KnowledgeChunk.document_version_id.in_(version_ids))
@@ -317,7 +322,7 @@ async def diagnose_equipment(
         keywords = [symptom] + ([fault_code] if fault_code else [])
         for chunk in chunks:
             if any(kw and kw.lower() in chunk.content.lower() for kw in keywords if kw):
-                doc_title = next((d.title for v, d in versions if v.id == chunk.document_version_id), "文档")
+                doc_title = doc_by_version.get(chunk.document_version_id, "文档")
                 citations.append(
                     {
                         "source_type": "knowledge",

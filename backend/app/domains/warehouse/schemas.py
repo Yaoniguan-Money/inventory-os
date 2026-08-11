@@ -74,6 +74,8 @@ class InventoryBalanceOut(BaseModel):
     version: int
     default_location_code: str | None = None
     incoming: Decimal = Decimal("0")
+    expired_qty: Decimal = Decimal("0")
+    projected: Decimal = Decimal("0")
     health_status: str = "NORMAL"
     last_receipt_at: datetime | None = None
     last_shipment_at: datetime | None = None

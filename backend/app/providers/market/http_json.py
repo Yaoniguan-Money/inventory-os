@@ -54,6 +54,8 @@ class GenericHttpJsonProvider(MarketDataProvider):
                         currency=row.get("currency", "CNY"),
                         source="GenericHttpJsonProvider",
                         region=row.get("region", region),
+                        unit=row.get("unit"),
+                        basis=row.get("basis"),
                         observed_at=observed,
                         raw_payload=row,
                     )
@@ -67,6 +69,8 @@ class GenericHttpJsonProvider(MarketDataProvider):
                         currency=row.get("currency", "CNY"),
                         source="GenericHttpJsonProvider",
                         region=row.get("region", region),
+                        unit=row.get("unit"),
+                        basis=row.get("basis"),
                         observed_at=observed,
                         raw_payload=row,
                     )

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import uuid
 from datetime import datetime
+from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -16,7 +17,7 @@ class KnowledgeDocumentCreate(BaseModel):
     title: str = Field(min_length=1, max_length=300)
     document_type: str = Field(default="SOP", max_length=40)
     status: str = Field(default="PUBLISHED", max_length=24)
-    access_scope: str = Field(default="ORG", max_length=24)  # ORG / OWNER
+    access_scope: Literal["ORG", "OWNER"] = "ORG"
     source_type: str = Field(default="MANUAL", max_length=40)
     source_uri: str | None = None
     content: str = Field(min_length=1)

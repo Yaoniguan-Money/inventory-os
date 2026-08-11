@@ -40,6 +40,8 @@ class OpenErApiFxProvider(MarketDataProvider):
                 currency="CNY",
                 source="OpenErApiFxProvider (真实国际汇率参考)",
                 region=region or "INTERNATIONAL",
+                unit="CNY",
+                basis="FX",
                 observed_at=now,
                 raw_payload={"base": "CNY", "rate": str(rate)},
             )

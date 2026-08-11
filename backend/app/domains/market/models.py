@@ -25,6 +25,8 @@ class MarketQuote(UUIDPrimaryKeyMixin, OrgScopedMixin, Base):
     source: Mapped[str] = mapped_column(String(120), nullable=False)
     source_url: Mapped[str | None] = mapped_column(String(500), nullable=True)
     region: Mapped[str] = mapped_column(String(24), nullable=False, default="DOMESTIC")
+    unit: Mapped[str | None] = mapped_column(String(24), nullable=True)
+    basis: Mapped[str | None] = mapped_column(String(24), nullable=True)
     observed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     fetched_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     raw_payload: Mapped[dict[str, Any] | None] = mapped_column(JSON, nullable=True)

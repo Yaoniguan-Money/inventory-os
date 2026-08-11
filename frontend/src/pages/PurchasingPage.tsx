@@ -47,6 +47,7 @@ interface MarketQuoteLike {
   price: string
   currency: string
   source: string
+  basis: string | null
   observed_at: string
 }
 
@@ -198,6 +199,7 @@ export default function PurchasingPage() {
                     {w.market_quotes?.INTERNATIONAL?.MARKET_SELL ? (
                       <div className="text-xs">
                         <div className="tabular text-slate-200">
+                          {w.market_quotes.INTERNATIONAL.MARKET_SELL.basis === 'FX' ? '汇率 ' : ''}
                           {fmtMoney(
                             w.market_quotes.INTERNATIONAL.MARKET_SELL.price,
                             w.market_quotes.INTERNATIONAL.MARKET_SELL.currency,

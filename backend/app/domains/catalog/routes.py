@@ -27,6 +27,7 @@ from app.domains.warehouse.models import (
     StockMovement,
     Warehouse,
 )
+from app.domains.warehouse.service import expired_lot_quantity
 
 router = APIRouter(tags=["catalog"])
 
@@ -93,7 +94,10 @@ async def update_product_route(
         payload=payload,
     )
     await db.commit()
-    return ProductOut.model_validate(product)
+    fresh = (
+        await db.execute(select(Product).where(Product.id == product.id))
+    ).scalar_one()
+    return ProductOut.model_validate(fresh)
 
 
 @router.get("/products/{product_id}/timeline")
@@ -143,6 +147,10 @@ async def product_overview(
     ).scalars().all()
     on_hand = sum((b.on_hand for b in balances), Decimal("0"))
     reserved = sum((b.reserved for b in balances), Decimal("0"))
+    expired_qty = await expired_lot_quantity(
+        db, organization_id=user.organization_id, product_id=product_id
+    )
+    available = max(on_hand - reserved - expired_qty, Decimal("0"))
     lots = (
         await db.execute(
             select(InventoryLot).where(
@@ -272,8 +280,10 @@ async def product_overview(
         "inventory": {
             "on_hand": on_hand,
             "reserved": reserved,
-            "available": on_hand - reserved,
+            "available": available,
             "incoming": incoming,
+            "expired_qty": expired_qty,
+            "projected": available + incoming,
             "due_7d": due_7d,
             "lot_count": len(lots),
         },

@@ -215,6 +215,27 @@
 - Playwright 加入 GitHub Actions（独立 E2E Job）；README 测试计数更新。
 - 当前后端测试 79 项全通过（本轮新增 8 项），前端构建/测试与 E2E 待最终验证。
 
+## 第五轮审计修复（过期批次 / 阈值一致性 / 价格账唯一路径 / 语义与边界）
+
+- P0 过期批次：`expired_lot_quantity()` 进入健康可用量计算与 `EXPIRY_RISK`（已过期 CRITICAL）；
+  `issue_stock` / 订单履约消费批次时排除 `expires_at < now`，且可用校验扣除过期量，过期库存不可出库。
+- P0 呆滞阈值：`DORMANT_STOCK` 使用 `health_dormant_days`（30）而非写死 90 天，60 天前出过货即进入呆滞。
+- P0 目标售价唯一写路径：Product 创建/更新同步写入 `TARGET_SELL_PRICE` 快照（价格账唯一真相）。
+- P0/P1 汇率语义：`MarketQuote` 增加 `unit/basis`；`open_er_api` 标记 `unit=CNY, basis=FX`，
+  UI 明确显示“汇率参考（外汇环境）”，`PRICE_PRESSURE` 只在可比口径（非 FX、单位一致/未指定）计算。
+- P1 跨仓领料：新增 `allocate_issue()` 通用跨仓可用库存分配器，设备维修备件按默认仓优先逐仓扣减。
+- P1 设备诊断只检索每个文档最新版本，旧 SOP/旧手册不再混入证据。
+- P1 权限枚举：`access_scope` 改为 `Literal["ORG","OWNER"]` + DB CheckConstraint；
+  知识文档实体关联（PRODUCT/EQUIPMENT/WAREHOUSE/SUPPLIER）校验组织归属，杜绝跨企业脏关联。
+- P1 订单日期口径统一：列表逾期/交付期限筛选与 Dashboard `orders_due/upcoming` 使用
+  `COALESCE(line.required_at, order.required_at)`（行级优先）。
+- P1 ATP：同一商品的 incoming 按截止时间顺序分配，订单级风险不再被多单重复“借用”。
+- P2 Inventory 多仓列表：`incoming/health/last_receipt/...` 等商品级字段对所有 Warehouse 行一致展示；
+  `Projected = Available + Incoming` 正式落地（单商品、列表、商品页、工作台）。
+- P2 商品详情健康分改为只显示后端权威分；订单创建支持动态多 SKU 行；`/forecast/*` 增加 `market:read` 鉴权。
+- 新增 11 项回归测试；E2E 新增智能出入库故事（扫码识别 → 确认入库 → 库存增加）。
+- 当前后端测试 90 项全通过，前端构建/测试与 2 条 E2E 全部通过。
+
 ## Definition of Done 核对
 
 - [x] private repo 创建：https://github.com/Yaoniguan-Money/inventory-os
@@ -238,7 +259,7 @@
 - [x] 采购中心统一视图（库存/在途/需求/历史采购价/供应商/行情）
 - [x] ForecastProvider / capability / API 存在且 disabled；UI 无伪预测
 - [x] 未实现面向客户客服助手
-- [x] 权限测试、核心库存/订单测试通过（pytest 79 项，含跨租户/权限绕过/批次边界/成本快照/多仓库/API Key scope/AI Tool scope/健康公式/跨仓预留回归）
+- [x] 权限测试、核心库存/订单测试通过（pytest 90 项，含跨租户/权限绕过/批次边界/成本快照/多仓库/API Key scope/AI Tool scope/健康公式/跨仓预留/过期批次/ATP/实体归属回归）
 - [x] Playwright 核心链路通过
 - [x] CI 工作流已配置；本地等价检查（ruff/mypy/pytest/build/typecheck/lint/test）全绿，推送后由 GitHub Actions 验证
 - [x] docs/PROGRESS.md 处于最终完成状态

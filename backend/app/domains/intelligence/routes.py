@@ -98,7 +98,9 @@ async def explain_alert_route(
 
 
 @router.get("/forecast/capabilities")
-async def forecast_capabilities() -> dict:
+async def forecast_capabilities(
+    user: CurrentUser = Depends(require_scope("market:read")),
+) -> dict:
     capability = await DisabledForecastProvider().capability()
     return {
         "enabled": capability.enabled,
@@ -108,21 +110,30 @@ async def forecast_capabilities() -> dict:
 
 
 @router.post("/forecast/price")
-async def forecast_price(payload: ForecastRequest) -> dict:
+async def forecast_price(
+    payload: ForecastRequest,
+    user: CurrentUser = Depends(require_scope("market:read")),
+) -> dict:
     return await DisabledForecastProvider().forecast_price(
         payload.subject_id, payload.horizon, **payload.params
     )
 
 
 @router.post("/forecast/demand")
-async def forecast_demand(payload: ForecastRequest) -> dict:
+async def forecast_demand(
+    payload: ForecastRequest,
+    user: CurrentUser = Depends(require_scope("market:read")),
+) -> dict:
     return await DisabledForecastProvider().forecast_demand(
         payload.subject_id, payload.horizon, **payload.params
     )
 
 
 @router.post("/forecast/supply-risk")
-async def forecast_supply_risk(payload: ForecastRequest) -> dict:
+async def forecast_supply_risk(
+    payload: ForecastRequest,
+    user: CurrentUser = Depends(require_scope("market:read")),
+) -> dict:
     return await DisabledForecastProvider().forecast_supply_risk(
         payload.subject_id, payload.horizon, **payload.params
     )

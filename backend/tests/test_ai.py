@@ -162,12 +162,15 @@ async def test_explain_alert_uses_evidence(
     assert "证据" in data["explanation"] or data["explanation"]
 
 
-async def test_forecast_disabled_by_default(client: httpx.AsyncClient) -> None:
-    capabilities = await client.get("/api/v1/forecast/capabilities")
+async def test_forecast_disabled_by_default(
+    client: httpx.AsyncClient, org_owner_headers: dict[str, str]
+) -> None:
+    capabilities = await client.get("/api/v1/forecast/capabilities", headers=org_owner_headers)
     assert capabilities.status_code == 200
     assert capabilities.json()["enabled"] is False
     price = await client.post(
         "/api/v1/forecast/price",
+        headers=org_owner_headers,
         json={"subject_id": "A001", "horizon": "14d", "params": {"window": 30}},
     )
     assert price.status_code == 200
@@ -175,6 +178,15 @@ async def test_forecast_disabled_by_default(client: httpx.AsyncClient) -> None:
     assert price.json()["points"] == []
     assert price.json()["subject_id"] == "A001"
     assert price.json()["horizon"] == "14d"
+
+
+async def test_forecast_requires_market_scope(client: httpx.AsyncClient) -> None:
+    capabilities = await client.get("/api/v1/forecast/capabilities")
+    assert capabilities.status_code == 401
+    price = await client.post(
+        "/api/v1/forecast/price", json={"subject_id": "A001", "horizon": "30d"}
+    )
+    assert price.status_code == 401
 
 
 async def test_ai_capabilities_exposed(

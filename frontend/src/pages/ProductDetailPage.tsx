@@ -36,6 +36,8 @@ interface Overview {
     reserved: string
     available: string
     incoming: string
+    expired_qty: string
+    projected: string
     due_7d: string
     lot_count: number
   }
@@ -79,6 +81,7 @@ interface MarketData {
     currency: string
     source: string
     region: string
+    basis: string | null
     observed_at: string
   }>
   events: Array<{ id: string; title: string; source: string; published_at: string }>
@@ -224,6 +227,13 @@ export default function ProductDetailPage() {
           </div>
         </Card>
         <Card>
+          <div className="text-xs text-slate-400">Projected</div>
+          <div className="tabular mt-1 text-2xl font-semibold text-violet-300">
+            <GsapNumber value={Number(data.inventory.projected)} />
+          </div>
+          <div className="mt-1 text-[11px] text-slate-500">Available + Incoming</div>
+        </Card>
+        <Card>
           <div className="text-xs text-slate-400">未来 7 日待交付</div>
           <div className="tabular mt-1 text-2xl font-semibold text-red-300">
             <GsapNumber value={Number(data.inventory.due_7d)} />
@@ -232,22 +242,9 @@ export default function ProductDetailPage() {
         <Card>
           <div className="text-xs text-slate-400">库存健康分</div>
           <div className="tabular mt-1 text-2xl font-semibold text-slate-100">
-            {data.alerts.length
-              ? Math.max(
-                  0,
-                  100 -
-                    data.alerts.reduce(
-                      (s, a) =>
-                        s +
-                        ({ CRITICAL: 25, HIGH: 15, MEDIUM: 8, LOW: 3, INFO: 1 } as Record<
-                          string,
-                          number
-                        >)[a.severity],
-                      0,
-                    ),
-                )
-              : 100}
+            <GsapNumber value={data.health.score} />
           </div>
+          <div className="mt-1 text-[11px] text-slate-500">后端权威分 / 100</div>
         </Card>
         <Card>
           <div className="text-xs text-slate-400">批次数量</div>
@@ -291,7 +288,11 @@ export default function ProductDetailPage() {
                   return (
                     <div key={kind} className="mb-2 last:mb-0">
                       <div className="text-[11px] text-slate-500">
-                        {kind === 'MARKET_BUY' ? '市场采购价' : '常见售价'}
+                        {quote?.basis === 'FX'
+                          ? '汇率参考'
+                          : kind === 'MARKET_BUY'
+                            ? '市场采购价'
+                            : '常见售价'}
                       </div>
                       <div className="tabular text-lg font-semibold text-slate-100">
                         {quote ? fmtMoney(quote.price, quote.currency) : '—'}

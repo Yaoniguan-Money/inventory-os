@@ -8,6 +8,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.errors import NotFoundError
 from app.core.events import record_event
+from app.domains.catalog.models import Product
+from app.domains.equipment.models import EquipmentAsset
 from app.domains.knowledge.models import (
     KnowledgeChunk,
     KnowledgeDocument,
@@ -15,6 +17,33 @@ from app.domains.knowledge.models import (
     KnowledgeEntityLink,
 )
 from app.domains.knowledge.schemas import KnowledgeDocumentOut
+from app.domains.purchasing.models import Supplier
+from app.domains.warehouse.models import Warehouse
+
+
+async def _validate_entity(
+    db: AsyncSession,
+    *,
+    organization_id: str,
+    entity_type: str,
+    entity_id: uuid.UUID,
+) -> None:
+    from app.core.errors import ValidationFailureError
+
+    model_map = {
+        "PRODUCT": Product,
+        "EQUIPMENT": EquipmentAsset,
+        "WAREHOUSE": Warehouse,
+        "SUPPLIER": Supplier,
+    }
+    model = model_map.get(entity_type)
+    if model is None:
+        raise ValidationFailureError(f"不支持的实体类型: {entity_type}")
+    stmt = select(model).where(model.id == entity_id)  # type: ignore[attr-defined]
+    if hasattr(model, "organization_id"):
+        stmt = stmt.where(model.organization_id == uuid.UUID(organization_id))
+    if (await db.execute(stmt)).scalar_one_or_none() is None:
+        raise NotFoundError(f"{entity_type} 实体不存在或不属于当前组织")
 
 
 def _checksum(content: str) -> str:
@@ -74,6 +103,12 @@ async def create_document(
             )
         )
     for link in payload.entity_links:
+        await _validate_entity(
+            db,
+            organization_id=organization_id,
+            entity_type=link.entity_type,
+            entity_id=link.entity_id,
+        )
         db.add(
             KnowledgeEntityLink(
                 organization_id=uuid.UUID(organization_id),
@@ -242,6 +277,12 @@ async def link_document(
     relation_type: str,
 ) -> KnowledgeEntityLink:
     doc = await get_document(db, organization_id=organization_id, document_id=document_id)
+    await _validate_entity(
+        db,
+        organization_id=organization_id,
+        entity_type=entity_type,
+        entity_id=uuid.UUID(entity_id),
+    )
     link = KnowledgeEntityLink(
         organization_id=uuid.UUID(organization_id),
         document_id=doc.id,

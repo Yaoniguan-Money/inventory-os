@@ -120,6 +120,8 @@ POST /api/v1/forecast/supply-risk
 
 返回 `enabled=false` 且回显 `subject_id` / `horizon`，不生成预测数据。
 
+`/forecast/*` 需要 `market:read` 权限。
+
 ## AI / Integrations / Events
 
 ```text
@@ -158,6 +160,16 @@ inventory.adjusted  -> inventory:adjust
 ```
 
 缺少对应 scope 返回 403；未知 Provider 名称在创建映射时返回 422。
+
+## 市场行情语义
+
+- `MarketQuote` 含 `unit`（计价单位）与 `basis`（口径，如 `FX` 表示外汇环境）。
+- `open_er_api` 输出标记为 `basis=FX` 的汇率参考，UI 明确显示为“汇率参考（外汇环境）”，
+  不参与商品价格压力比较；只有可比口径（非 FX、单位一致或未指定）才计算 `PRICE_PRESSURE`。
+
+## Projected
+
+`Projected = Available + Incoming`，出现在单商品库存、库存列表、商品详情与采购工作台。
 
 > 请求/响应 schema 见 FastAPI `/docs`（OpenAPI）。当前实现以真实路由为准。
 

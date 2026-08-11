@@ -30,7 +30,11 @@ from app.domains.warehouse.models import (
     StockMovement,
     Warehouse,
 )
-from app.domains.warehouse.service import get_balance_locked, latest_snapshot
+from app.domains.warehouse.service import (
+    expired_lot_quantity,
+    get_balance_locked,
+    latest_snapshot,
+)
 
 
 def _order_no(db: AsyncSession, organization_id: str, prefix: str = "SO") -> str:
@@ -556,10 +560,21 @@ async def fulfill_order(
                 product_id=str(line.product_id),
                 warehouse_id=warehouse_id,
             )
-            if balance.on_hand < take:
+            expired = await expired_lot_quantity(
+                db,
+                organization_id=organization_id,
+                product_id=str(line.product_id),
+                warehouse_id=warehouse_id,
+            )
+            if balance.on_hand - expired < take:
                 raise InsufficientStockError(
-                    "实物库存不足",
-                    details={"warehouse_id": warehouse_id, "on_hand": str(balance.on_hand), "requested": str(take)},
+                    "可用实物库存不足（含过期批次不可出库）",
+                    details={
+                        "warehouse_id": warehouse_id,
+                        "on_hand": str(balance.on_hand),
+                        "expired": str(expired),
+                        "requested": str(take),
+                    },
                 )
             movements, unit_cost = await _consume_lots(
                 db,
@@ -679,6 +694,7 @@ async def _consume_lots(
                 InventoryLot.product_id == uuid.UUID(product_id),
                 InventoryLot.warehouse_id == uuid.UUID(warehouse_id),
                 InventoryLot.quantity_remaining > 0,
+                (InventoryLot.expires_at.is_(None)) | (InventoryLot.expires_at >= datetime.now(UTC)),
             )
             .order_by(InventoryLot.received_at, InventoryLot.expires_at)
             .with_for_update()

@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import uuid
+from datetime import UTC, datetime
+from decimal import Decimal
 
 from sqlalchemy import or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -10,6 +12,7 @@ from app.core.errors import ConflictError, NotFoundError
 from app.core.events import record_event
 from app.domains.catalog.models import Product
 from app.domains.catalog.schemas import ProductCreate, ProductUpdate
+from app.domains.pricing.service import record_price_snapshot
 from app.domains.warehouse.models import Location, Warehouse
 
 
@@ -96,6 +99,18 @@ async def create_product(
     )
     db.add(product)
     await db.flush()
+    if payload.target_sell_price is not None:
+        record_price_snapshot(
+            db,
+            organization_id=organization_id,
+            product_id=str(product.id),
+            price_type="TARGET_SELL_PRICE",
+            price=payload.target_sell_price,
+            currency=product.currency,
+            source_reference_type="PRODUCT",
+            source_reference_id=str(product.id),
+            effective_at=datetime.now(UTC),
+        )
     record_audit(
         db,
         organization_id=organization_id,
@@ -157,6 +172,18 @@ async def update_product(
     for field, value in changes.items():
         setattr(product, field, value)
     await db.flush()
+    if changes.get("target_sell_price") is not None:
+        record_price_snapshot(
+            db,
+            organization_id=organization_id,
+            product_id=str(product.id),
+            price_type="TARGET_SELL_PRICE",
+            price=changes["target_sell_price"],
+            currency=product.currency,
+            source_reference_type="PRODUCT",
+            source_reference_id=str(product.id),
+            effective_at=datetime.now(UTC),
+        )
     after = {"name": product.name, "status": product.status, "target_sell_price": str(product.target_sell_price)}
     record_audit(
         db,
@@ -175,6 +202,9 @@ async def update_product(
         event_type="catalog.product.updated",
         aggregate_type="product",
         aggregate_id=str(product.id),
-        payload=changes,
+        payload={
+            key: (str(value) if isinstance(value, Decimal) else value)
+            for key, value in changes.items()
+        },
     )
     return product

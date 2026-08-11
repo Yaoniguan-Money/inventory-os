@@ -37,6 +37,109 @@ async def get_warehouse(
     return warehouse
 
 
+async def expired_lot_quantity(
+    db: AsyncSession,
+    *,
+    organization_id: str,
+    product_id: str,
+    warehouse_id: str | None = None,
+    at: datetime | None = None,
+) -> Decimal:
+    """统计已过期（expires_at < now）且仍有正余量的批次数量。"""
+
+    cutoff = at or datetime.now(UTC)
+    stmt = select(InventoryLot).where(
+        InventoryLot.organization_id == uuid.UUID(organization_id),
+        InventoryLot.product_id == uuid.UUID(product_id),
+        InventoryLot.quantity_remaining > 0,
+        InventoryLot.expires_at.is_not(None),
+        InventoryLot.expires_at < cutoff,
+    )
+    if warehouse_id:
+        stmt = stmt.where(InventoryLot.warehouse_id == uuid.UUID(warehouse_id))
+    lots = (await db.execute(stmt)).scalars().all()
+    return sum((lot.quantity_remaining for lot in lots), Decimal("0"))
+
+
+async def allocate_issue(
+    db: AsyncSession,
+    *,
+    organization_id: str,
+    actor_id: str | None,
+    product_id: str,
+    quantity: Decimal,
+    reason: str | None,
+    reference_type: str | None = None,
+    reference_id: str | None = None,
+    preferred_warehouse_id: str | None = None,
+) -> list[tuple[InventoryBalance, list[StockMovement]]]:
+    """跨仓可用库存分配出库：默认仓优先，逐仓扣减，总量不足时显式报错。"""
+
+    if quantity <= 0:
+        raise ValidationFailureError("出库数量必须大于 0")
+    rows = (
+        await db.execute(
+            select(InventoryBalance)
+            .where(
+                InventoryBalance.organization_id == uuid.UUID(organization_id),
+                InventoryBalance.product_id == uuid.UUID(product_id),
+            )
+            .order_by(InventoryBalance.created_at)
+        )
+    ).scalars().all()
+    rows = sorted(
+        rows,
+        key=lambda balance: (
+            preferred_warehouse_id is not None
+            and balance.warehouse_id != uuid.UUID(preferred_warehouse_id),
+            balance.created_at,
+        ),
+    )
+    remaining = quantity
+    results: list[tuple[InventoryBalance, list[StockMovement]]] = []
+    total_available = Decimal("0")
+    for balance in rows:
+        expired = await expired_lot_quantity(
+            db, organization_id=organization_id, product_id=product_id,
+            warehouse_id=str(balance.warehouse_id),
+        )
+        total_available += balance.on_hand - balance.reserved - expired
+    if total_available < quantity:
+        raise InsufficientStockError(
+            "可用库存不足（已预留与过期批次不可挪用）",
+            details={
+                "product_id": product_id,
+                "available": str(total_available),
+                "requested": str(quantity),
+            },
+        )
+    for balance in rows:
+        if remaining <= 0:
+            break
+        expired = await expired_lot_quantity(
+            db, organization_id=organization_id, product_id=product_id,
+            warehouse_id=str(balance.warehouse_id),
+        )
+        sellable = balance.on_hand - balance.reserved - expired
+        take = min(sellable, remaining)
+        if take <= 0:
+            continue
+        issued_balance, movements = await issue_stock(
+            db,
+            organization_id=organization_id,
+            actor_id=actor_id,
+            product_id=product_id,
+            warehouse_id=str(balance.warehouse_id),
+            quantity=take,
+            reason=reason,
+            reference_type=reference_type,
+            reference_id=reference_id,
+        )
+        remaining -= take
+        results.append((issued_balance, movements))
+    return results
+
+
 async def get_balance_locked(
     db: AsyncSession, *, organization_id: str, product_id: str, warehouse_id: str
 ) -> InventoryBalance:
@@ -368,13 +471,19 @@ async def issue_stock(
     balance = await get_balance_locked(
         db, organization_id=organization_id, product_id=product_id, warehouse_id=warehouse_id
     )
-    if balance.on_hand - balance.reserved < quantity:
+    expired = await expired_lot_quantity(
+        db, organization_id=organization_id, product_id=product_id,
+        warehouse_id=warehouse_id,
+    )
+    sellable = balance.on_hand - balance.reserved - expired
+    if sellable < quantity:
         raise InsufficientStockError(
-            "可用库存不足，无法出库（已预留库存不可挪用）",
+            "可用库存不足，无法出库（已预留与过期批次不可挪用）",
             details={
                 "on_hand": str(balance.on_hand),
                 "reserved": str(balance.reserved),
-                "available": str(balance.on_hand - balance.reserved),
+                "expired": str(expired),
+                "available": str(sellable),
                 "requested": str(quantity),
             },
         )
@@ -386,6 +495,7 @@ async def issue_stock(
                 InventoryLot.product_id == uuid.UUID(product_id),
                 InventoryLot.warehouse_id == uuid.UUID(warehouse_id),
                 InventoryLot.quantity_remaining > 0,
+                (InventoryLot.expires_at.is_(None)) | (InventoryLot.expires_at >= occurred),
             )
             .order_by(InventoryLot.received_at, InventoryLot.expires_at)
             .with_for_update()

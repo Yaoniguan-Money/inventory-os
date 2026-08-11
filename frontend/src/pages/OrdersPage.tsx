@@ -68,31 +68,27 @@ export default function OrdersPage() {
     queryFn: () => api.get<Array<{ id: string; sku: string; name: string }>>('/products'),
   })
 
-  const [form, setForm] = useState({
-    customer_id: '',
-    product_id: '',
-    ordered_qty: '',
-    unit_sell_price: '',
-    required_at: '',
-  })
+  const [form, setForm] = useState({ customer_id: '', required_at: '' })
+  const [lines, setLines] = useState([{ product_id: '', ordered_qty: '', unit_sell_price: '' }])
 
   const createMutation = useMutation({
     mutationFn: () =>
       api.post('/orders', {
         customer_id: form.customer_id,
-        lines: [
-          {
-            product_id: form.product_id,
-            ordered_qty: form.ordered_qty,
-            unit_sell_price: form.unit_sell_price || null,
-          },
-        ],
+        lines: lines
+          .filter((l) => l.product_id && l.ordered_qty)
+          .map((l) => ({
+            product_id: l.product_id,
+            ordered_qty: l.ordered_qty,
+            unit_sell_price: l.unit_sell_price || null,
+          })),
         required_at: form.required_at ? new Date(form.required_at).toISOString() : null,
       }),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['orders'] })
       setCreateOpen(false)
-      setForm({ customer_id: '', product_id: '', ordered_qty: '', unit_sell_price: '', required_at: '' })
+      setForm({ customer_id: '', required_at: '' })
+      setLines([{ product_id: '', ordered_qty: '', unit_sell_price: '' }])
     },
     onError: setError,
   })
@@ -272,31 +268,70 @@ export default function OrdersPage() {
               </option>
             ))}
           </select>
-          <select
-            value={form.product_id}
-            onChange={(e) => setForm({ ...form, product_id: e.target.value })}
-            className="w-full rounded-lg border border-slate-700 bg-slate-800/70 px-3 py-2 text-sm outline-none"
-          >
-            <option value="">选择商品 *</option>
-            {products.data?.map((p) => (
-              <option key={p.id} value={p.id}>
-                {p.sku} · {p.name}
-              </option>
+          <div className="space-y-2">
+            <div className="text-xs text-slate-400">商品行（支持多行）</div>
+            {lines.map((line, index) => (
+              <div key={index} className="space-y-2 rounded-lg border border-slate-800 bg-slate-900/60 p-2">
+                <div className="flex gap-2">
+                  <select
+                    value={line.product_id}
+                    onChange={(e) => {
+                      const next = [...lines]
+                      next[index] = { ...next[index], product_id: e.target.value }
+                      setLines(next)
+                    }}
+                    className="flex-1 rounded-lg border border-slate-700 bg-slate-800/70 px-3 py-2 text-sm outline-none"
+                  >
+                    <option value="">选择商品 *</option>
+                    {products.data?.map((p) => (
+                      <option key={p.id} value={p.id}>
+                        {p.sku} · {p.name}
+                      </option>
+                    ))}
+                  </select>
+                  {lines.length > 1 && (
+                    <Button
+                      variant="danger"
+                      className="shrink-0"
+                      onClick={() => setLines(lines.filter((_, i) => i !== index))}
+                    >
+                      删除
+                    </Button>
+                  )}
+                </div>
+                <div className="grid grid-cols-2 gap-2">
+                  <input
+                    placeholder="数量 *"
+                    value={line.ordered_qty}
+                    onChange={(e) => {
+                      const next = [...lines]
+                      next[index] = { ...next[index], ordered_qty: e.target.value }
+                      setLines(next)
+                    }}
+                    className="rounded-lg border border-slate-700 bg-slate-800/70 px-3 py-2 text-sm outline-none"
+                  />
+                  <input
+                    placeholder="成交价"
+                    value={line.unit_sell_price}
+                    onChange={(e) => {
+                      const next = [...lines]
+                      next[index] = { ...next[index], unit_sell_price: e.target.value }
+                      setLines(next)
+                    }}
+                    className="rounded-lg border border-slate-700 bg-slate-800/70 px-3 py-2 text-sm outline-none"
+                  />
+                </div>
+              </div>
             ))}
-          </select>
-          <div className="grid grid-cols-2 gap-2">
-            <input
-              placeholder="数量 *"
-              value={form.ordered_qty}
-              onChange={(e) => setForm({ ...form, ordered_qty: e.target.value })}
-              className="rounded-lg border border-slate-700 bg-slate-800/70 px-3 py-2 text-sm outline-none"
-            />
-            <input
-              placeholder="成交价"
-              value={form.unit_sell_price}
-              onChange={(e) => setForm({ ...form, unit_sell_price: e.target.value })}
-              className="rounded-lg border border-slate-700 bg-slate-800/70 px-3 py-2 text-sm outline-none"
-            />
+            <Button
+              variant="outline"
+              className="w-full"
+              onClick={() =>
+                setLines([...lines, { product_id: '', ordered_qty: '', unit_sell_price: '' }])
+              }
+            >
+              + 添加商品行
+            </Button>
           </div>
           <input
             type="datetime-local"
@@ -306,7 +341,11 @@ export default function OrdersPage() {
           />
           <Button
             className="w-full"
-            disabled={!form.customer_id || !form.product_id || !form.ordered_qty || createMutation.isPending}
+            disabled={
+              !form.customer_id ||
+              lines.some((l) => !l.product_id || !l.ordered_qty) ||
+              createMutation.isPending
+            }
             onClick={() => createMutation.mutate()}
           >
             {createMutation.isPending ? '创建中…' : '创建草稿'}

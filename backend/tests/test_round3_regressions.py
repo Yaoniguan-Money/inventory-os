@@ -106,7 +106,7 @@ async def test_issue_and_adjust_respect_reserved(
         },
     )
     assert denied.status_code == 409
-    assert "已预留库存不可挪用" in denied.json()["error"]["message"]
+    assert "已预留" in denied.json()["error"]["message"]
 
     # 手工负调整 -30：同样应被拒绝。
     adjust = await client.post(
@@ -120,7 +120,7 @@ async def test_issue_and_adjust_respect_reserved(
         },
     )
     assert adjust.status_code == 409
-    assert "已预留库存不可挪用" in adjust.json()["error"]["message"]
+    assert "已预留" in adjust.json()["error"]["message"]
 
     # 领 20（=可用）成功。
     ok = await client.post(

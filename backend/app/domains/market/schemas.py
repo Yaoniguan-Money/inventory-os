@@ -21,6 +21,8 @@ class MarketQuoteOut(BaseModel):
     source: str
     source_url: str | None
     region: str
+    unit: str | None
+    basis: str | None
     observed_at: datetime
     fetched_at: datetime
 

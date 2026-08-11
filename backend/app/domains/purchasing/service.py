@@ -17,7 +17,7 @@ from app.domains.market.models import MarketEvent, MarketQuote
 from app.domains.orders.models import SalesOrder, SalesOrderLine
 from app.domains.purchasing.models import PurchaseOrder, PurchaseOrderLine, Supplier
 from app.domains.warehouse.models import InventoryBalance, StockMovement, Warehouse
-from app.domains.warehouse.service import latest_snapshot, receive_stock
+from app.domains.warehouse.service import expired_lot_quantity, latest_snapshot, receive_stock
 
 
 def _po_no() -> str:
@@ -353,6 +353,8 @@ async def workbench(db: AsyncSession, *, organization_id: str) -> list[dict]:
                     "price": str(quote.price),
                     "currency": quote.currency,
                     "source": quote.source,
+                    "unit": quote.unit,
+                    "basis": quote.basis,
                     "observed_at": quote.observed_at.isoformat(),
                 }
         receipts = (
@@ -405,7 +407,10 @@ async def workbench(db: AsyncSession, *, organization_id: str) -> list[dict]:
         ).scalars().all()
         on_hand = sum((b.on_hand for b in balances), Decimal("0"))
         reserved = sum((b.reserved for b in balances), Decimal("0"))
-        available = on_hand - reserved
+        expired_qty = await expired_lot_quantity(
+            db, organization_id=organization_id, product_id=pid
+        )
+        available = max(on_hand - reserved - expired_qty, Decimal("0"))
         incoming = await incoming_for_product(db, organization_id=organization_id, product_id=pid)
         demand_lines = (
             await db.execute(
@@ -451,6 +456,8 @@ async def workbench(db: AsyncSession, *, organization_id: str) -> list[dict]:
                 "on_hand": on_hand,
                 "reserved": reserved,
                 "available": available,
+                "expired_qty": expired_qty,
+                "projected": available + incoming,
                 "incoming": incoming,
                 "demand_7d": demand,
                 "shortage_7d": max(demand - available - incoming, Decimal("0")),

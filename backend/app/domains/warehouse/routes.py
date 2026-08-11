@@ -28,7 +28,7 @@ from app.domains.warehouse.schemas import (
     WarehouseCreate,
     WarehouseOut,
 )
-from app.domains.warehouse.service import adjust_stock, get_warehouse, receive_stock
+from app.domains.warehouse.service import adjust_stock, expired_lot_quantity, get_warehouse, receive_stock
 
 router = APIRouter(tags=["warehouse"])
 
@@ -111,6 +111,7 @@ def _balance_out(
     warehouse: Warehouse,
     extras: dict | None = None,
 ) -> InventoryBalanceOut:
+    extras = extras or {}
     payload = {
         "product_id": balance.product_id,
         "sku": product.sku,
@@ -123,6 +124,7 @@ def _balance_out(
         "version": balance.version,
     }
     payload.update(extras or {})
+    payload["projected"] = payload["available"] + extras.get("incoming", Decimal("0"))
     return InventoryBalanceOut(**payload)
 
 
@@ -177,9 +179,13 @@ async def _inventory_extras(
             .limit(1)
         )
     ).scalar_one_or_none()
+    expired_qty = await expired_lot_quantity(
+        db, organization_id=organization_id, product_id=str(product.id)
+    )
     return {
         "default_location_code": default_location_code,
         "incoming": incoming,
+        "expired_qty": expired_qty,
         "health_status": health_status,
         "last_receipt_at": last_receipt.occurred_at if last_receipt else None,
         "last_shipment_at": last_shipment.occurred_at if last_shipment else None,
@@ -201,14 +207,13 @@ async def list_inventory(
         )
     ).all()
     outputs: list[InventoryBalanceOut] = []
-    seen_products: set[str] = set()
+    product_extras: dict[str, dict] = {}
     for balance, product, warehouse in rows:
-        extras = {}
-        if str(product.id) not in seen_products:
-            extras = await _inventory_extras(
+        if str(product.id) not in product_extras:
+            product_extras[str(product.id)] = await _inventory_extras(
                 db, organization_id=user.organization_id, product=product
             )
-            seen_products.add(str(product.id))
+        extras = product_extras[str(product.id)]
         outputs.append(_balance_out(balance, product, warehouse, extras))
     return outputs
 
@@ -235,6 +240,13 @@ async def get_inventory(
     on_hand = sum((b.on_hand for b, _ in rows), Decimal("0"))
     reserved = sum((b.reserved for b, _ in rows), Decimal("0"))
     version = sum((b.version for b, _ in rows), 0)
+    incoming = await incoming_for_product(
+        db, organization_id=user.organization_id, product_id=product_id
+    )
+    expired_qty = await expired_lot_quantity(
+        db, organization_id=user.organization_id, product_id=product_id
+    )
+    available = on_hand - reserved - expired_qty
     return InventoryBalanceOut(
         product_id=product.id,
         sku=product.sku,
@@ -243,8 +255,11 @@ async def get_inventory(
         warehouse_code="ALL",
         on_hand=on_hand,
         reserved=reserved,
-        available=on_hand - reserved,
+        available=available,
         version=version,
+        incoming=incoming,
+        expired_qty=expired_qty,
+        projected=available + incoming,
     )
 
 
