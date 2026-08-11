@@ -14,7 +14,8 @@ export default defineConfig({
   },
   webServer: [
     {
-      command: `set DATABASE_URL=${e2eDatabaseUrl}&& cd ..\\backend && uv run python -m app.scripts.reset_e2e && uv run uvicorn app.main:app --host 127.0.0.1 --port 8000`,
+      command: 'node scripts/start-e2e-backend.mjs',
+      env: { ...process.env, E2E_DATABASE_URL: e2eDatabaseUrl },
       url: 'http://127.0.0.1:8000/',
       reuseExistingServer: false,
       timeout: 60_000,
