@@ -276,6 +276,19 @@
 - P2 Integration schema_version 版本化：未知版本直接 `rejected`，不再“收了字段不校验”（测试覆盖 2.0）。
 - 新增 9 项回归测试；当前后端测试 114 项全通过，前端构建/测试与 2 条 E2E 通过。
 
+## 第八轮修复（PO 关联入库 / 未知 ETA ATP / 共享 ATPService）
+
+- PO 关联入库（`purchase_order_line_id`）：`receive_stock` 校验采购行属于当前组织、商品匹配、且不超过剩余数量；
+  跨组织 / 跨 SKU 脏关联直接 404，超量 409；入库同步 `PurchaseOrderLine.received_qty` 与 PO 状态
+  （PARTIAL/RECEIVED），Workbench Incoming 随之减少；采购收货服务不再二次累加。
+- ATP 未知 ETA：有截止日期的订单只能使用 ETA 明确且不晚于截止日的在途（ETA=None 不参与），
+  Health 与 Dashboard 共用规则（回归测试覆盖）。
+- 共享 ATPService（`app/domains/warehouse/atp.py`）：`build_buckets / consume_buckets /
+  incoming_before / incoming_total / IncomingAllocator`；
+  Health、Dashboard、订单详情、采购工作台统一使用同一套时间桶分配逻辑；
+  订单详情 `incoming` 改为“可分配份额”（按自身缺口逐桶认领），不再把同一批在途全额算给单个订单。
+- 新增 3 项回归测试；当前后端测试 117 项全通过，前端构建/测试与 2 条 E2E 通过。
+
 ## Definition of Done 核对
 
 - [x] private repo 创建：https://github.com/Yaoniguan-Money/inventory-os
@@ -299,7 +312,7 @@
 - [x] 采购中心统一视图（库存/在途/需求/历史采购价/供应商/行情）
 - [x] ForecastProvider / capability / API 存在且 disabled；UI 无伪预测
 - [x] 未实现面向客户客服助手
-- [x] 权限测试、核心库存/订单测试通过（pytest 114 项，含跨租户/权限绕过/批次边界/成本快照/多仓库/API Key scope/AI Tool scope/健康公式/跨仓预留/过期批次/ATP/实体归属/并发/预留覆盖/时间桶 ATP/币种一致性回归）
+- [x] 权限测试、核心库存/订单测试通过（pytest 117 项，含跨租户/权限绕过/批次边界/成本快照/多仓库/API Key scope/AI Tool scope/健康公式/跨仓预留/过期批次/ATP/实体归属/并发/预留覆盖/时间桶 ATP/币种一致性/PO 关联入库/未知 ETA 回归）
 - [x] Playwright 核心链路通过
 - [x] CI 工作流已配置；本地等价检查（ruff/mypy/pytest/build/typecheck/lint/test）全绿，推送后由 GitHub Actions 验证
 - [x] docs/PROGRESS.md 处于最终完成状态

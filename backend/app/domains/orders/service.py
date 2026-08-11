@@ -23,7 +23,7 @@ from app.domains.orders.models import (
 )
 from app.domains.pricing.service import record_price_snapshot
 from app.domains.purchasing.models import PurchaseOrder, PurchaseOrderLine
-from app.domains.purchasing.service import incoming_for_product
+from app.domains.warehouse.atp import IncomingAllocator
 from app.domains.warehouse.models import (
     InventoryBalance,
     InventoryLot,
@@ -136,10 +136,11 @@ async def build_order_out(db: AsyncSession, organization_id: str, order: SalesOr
         sellable = max(on_hand - expired, Decimal("0"))
         covered = min(line.reserved_qty, sellable)
         deadline = line.required_at or order.required_at
-        incoming = await incoming_for_product(
-            db, organization_id=organization_id, product_id=str(line.product_id), before=deadline
-        )
         remaining = line.ordered_qty - line.delivered_qty
+        allocator = await IncomingAllocator.build(
+            db, organization_id=organization_id, product_id=str(line.product_id)
+        )
+        incoming = allocator.allocate(deadline, max(remaining - covered, Decimal("0")))
         line_meta[str(line.id)] = {
             "available": available,
             "incoming": incoming,

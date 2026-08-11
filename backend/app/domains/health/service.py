@@ -16,95 +16,11 @@ from app.domains.health.models import InventoryAlert
 from app.domains.market.models import MarketQuote
 from app.domains.orders.models import SalesOrder, SalesOrderLine
 from app.domains.pricing.models import InternalPriceSnapshot
-from app.domains.purchasing.models import PurchaseOrder, PurchaseOrderLine
+from app.domains.warehouse.atp import IncomingAllocator, incoming_before
 from app.domains.warehouse.models import InventoryBalance, InventoryLot, StockMovement
 from app.domains.warehouse.service import expired_lot_quantity
 
 SEVERITY_ORDER = {"CRITICAL": 0, "HIGH": 1, "MEDIUM": 2, "LOW": 3, "INFO": 4}
-
-
-async def _incoming_before(
-    db: AsyncSession,
-    organization_id: str,
-    product_id: str,
-    deadline: datetime | None,
-) -> Decimal:
-    stmt = (
-        select(PurchaseOrderLine)
-        .join(PurchaseOrder, PurchaseOrder.id == PurchaseOrderLine.purchase_order_id)
-        .where(
-            PurchaseOrder.organization_id == uuid.UUID(organization_id),
-            PurchaseOrderLine.product_id == uuid.UUID(product_id),
-            PurchaseOrder.status.in_(["CONFIRMED", "PARTIAL"]),
-        )
-    )
-    if deadline is not None:
-        stmt = stmt.where(
-            func.coalesce(PurchaseOrderLine.expected_at, PurchaseOrder.expected_at) <= deadline
-        )
-    lines = (await db.execute(stmt)).scalars().all()
-    return sum((line.ordered_qty - line.received_qty for line in lines), Decimal("0"))
-
-
-async def _incoming_total(
-    db: AsyncSession, organization_id: str, product_id: str
-) -> Decimal:
-    stmt = (
-        select(PurchaseOrderLine)
-        .join(PurchaseOrder, PurchaseOrder.id == PurchaseOrderLine.purchase_order_id)
-        .where(
-            PurchaseOrder.organization_id == uuid.UUID(organization_id),
-            PurchaseOrderLine.product_id == uuid.UUID(product_id),
-            PurchaseOrder.status.in_(["CONFIRMED", "PARTIAL"]),
-        )
-    )
-    lines = (await db.execute(stmt)).scalars().all()
-    return sum((line.ordered_qty - line.received_qty for line in lines), Decimal("0"))
-
-
-async def _incoming_buckets(
-    db: AsyncSession, organization_id: str, product_id: str
-) -> list[list]:
-    """按 PO ETA 排序的在途时间桶：[[eta, remaining_qty], ...]，eta 为 None 表示未定。"""
-
-    rows = (
-        await db.execute(
-            select(PurchaseOrderLine, PurchaseOrder)
-            .join(PurchaseOrder, PurchaseOrder.id == PurchaseOrderLine.purchase_order_id)
-            .where(
-                PurchaseOrder.organization_id == uuid.UUID(organization_id),
-                PurchaseOrderLine.product_id == uuid.UUID(product_id),
-                PurchaseOrder.status.in_(["CONFIRMED", "PARTIAL"]),
-            )
-        )
-    ).all()
-    buckets: list[list] = []
-    for line, po in rows:
-        qty = line.ordered_qty - line.received_qty
-        if qty <= 0:
-            continue
-        eta = line.expected_at or po.expected_at
-        buckets.append([eta, qty])
-    buckets.sort(key=lambda bucket: (bucket[0] is None, bucket[0] or datetime.max.replace(tzinfo=UTC)))
-    return buckets
-
-
-def _consume_buckets(
-    buckets: list[list], deadline: datetime | None, need: Decimal
-) -> Decimal:
-    """按 ETA <= deadline 逐桶消费在途；返回实际可分配数量。"""
-
-    allocated = Decimal("0")
-    for bucket in buckets:
-        if allocated >= need:
-            break
-        eta, qty = bucket
-        if deadline is not None and eta is not None and eta > deadline:
-            continue
-        take = min(qty, need - allocated)
-        bucket[1] -= take
-        allocated += take
-    return allocated
 
 
 async def _upsert_alert(
@@ -268,18 +184,20 @@ async def recalculate_product(
     sellable_pool = max(on_hand - expired_qty, Decimal("0"))
     reserved_covered_total = Decimal("0")
     order_risks: list[dict] = []
-    incoming_buckets = await _incoming_buckets(db, organization_id, pid)
+    allocator = await IncomingAllocator.build(
+        db, organization_id=organization_id, product_id=pid
+    )
     for line, order in demand_sorted:
         remaining = line.ordered_qty - line.delivered_qty
         covered = min(line.reserved_qty, sellable_pool)
         sellable_pool -= covered
         reserved_covered_total += covered
         deadline = line.required_at or order.required_at
-        incoming_for_line = await _incoming_before(
-            db, organization_id, str(line.product_id), deadline
+        incoming_for_line = await incoming_before(
+            db, organization_id=organization_id, product_id=pid, deadline=deadline
         )
-        allocated_incoming = _consume_buckets(
-            incoming_buckets, deadline, max(remaining - covered, Decimal("0"))
+        allocated_incoming = allocator.allocate(
+            deadline, max(remaining - covered, Decimal("0"))
         )
         if remaining > 0 and remaining > covered + allocated_incoming:
             order_risks.append(
@@ -295,20 +213,8 @@ async def recalculate_product(
             )
     reserved_for_due = reserved_covered_total
     unreserved_due = max(due_demand - reserved_for_due, Decimal("0"))
-    incoming_rows = (
-        await db.execute(
-            select(PurchaseOrderLine)
-            .join(PurchaseOrder, PurchaseOrder.id == PurchaseOrderLine.purchase_order_id)
-            .where(
-                PurchaseOrder.organization_id == org_uuid,
-                PurchaseOrderLine.product_id == product.id,
-                PurchaseOrder.status.in_(["CONFIRMED", "PARTIAL"]),
-                func.coalesce(PurchaseOrderLine.expected_at, PurchaseOrder.expected_at) <= horizon,
-            )
-        )
-    ).scalars().all()
-    incoming_before_due = sum(
-        (line.ordered_qty - line.received_qty for line in incoming_rows), Decimal("0")
+    incoming_before_due = await incoming_before(
+        db, organization_id=organization_id, product_id=pid, deadline=horizon
     )
     shortage = unreserved_due - available - incoming_before_due
     if shortage > 0:

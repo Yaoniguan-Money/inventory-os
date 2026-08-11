@@ -16,6 +16,7 @@ from app.domains.catalog.models import Product
 from app.domains.market.models import MarketEvent, MarketQuote
 from app.domains.orders.models import SalesOrder, SalesOrderLine
 from app.domains.purchasing.models import PurchaseOrder, PurchaseOrderLine, Supplier
+from app.domains.warehouse.atp import incoming_before, incoming_total
 from app.domains.warehouse.models import InventoryBalance, StockMovement, Warehouse
 from app.domains.warehouse.service import expired_lot_quantity, latest_snapshot, receive_stock
 
@@ -259,7 +260,6 @@ async def receive_purchase_order(
             purchase_order_line_id=str(line.id),
             reason=f"采购订单 {po.po_no} 到货",
         )
-        line.received_qty += qty
 
     all_lines = list(lines.values())
     po.status = "RECEIVED" if all(line.received_qty == line.ordered_qty for line in all_lines) else "PARTIAL"
@@ -411,9 +411,9 @@ async def workbench(db: AsyncSession, *, organization_id: str) -> list[dict]:
             db, organization_id=organization_id, product_id=pid
         )
         available = max(on_hand - reserved - expired_qty, Decimal("0"))
-        incoming = await incoming_for_product(db, organization_id=organization_id, product_id=pid)
-        incoming_before_7d = await incoming_for_product(
-            db, organization_id=organization_id, product_id=pid, before=horizon
+        incoming = await incoming_total(db, organization_id=organization_id, product_id=pid)
+        incoming_before_7d = await incoming_before(
+            db, organization_id=organization_id, product_id=pid, deadline=horizon
         )
         demand_lines = (
             await db.execute(

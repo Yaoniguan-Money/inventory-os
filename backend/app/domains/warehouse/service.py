@@ -13,6 +13,7 @@ from app.core.errors import InsufficientStockError, NotFoundError, ValidationFai
 from app.core.events import record_event
 from app.domains.catalog.models import Product
 from app.domains.pricing.models import InternalPriceSnapshot
+from app.domains.purchasing.models import PurchaseOrder, PurchaseOrderLine
 from app.domains.warehouse.models import (
     InventoryBalance,
     InventoryLot,
@@ -229,6 +230,32 @@ async def receive_stock(
     ).scalar_one_or_none()
     if product is None:
         raise NotFoundError("商品不存在")
+    if purchase_order_line_id:
+        poline = (
+            await db.execute(
+                select(PurchaseOrderLine)
+                .join(PurchaseOrder, PurchaseOrder.id == PurchaseOrderLine.purchase_order_id)
+                .where(
+                    PurchaseOrderLine.id == uuid.UUID(purchase_order_line_id),
+                    PurchaseOrder.organization_id == uuid.UUID(organization_id),
+                    PurchaseOrderLine.product_id == uuid.UUID(product_id),
+                    PurchaseOrder.status.in_(["CONFIRMED", "PARTIAL"]),
+                )
+                .with_for_update()
+            )
+        ).scalar_one_or_none()
+        if poline is None:
+            raise NotFoundError("采购订单行不存在、不属于当前组织或商品不匹配")
+        if quantity > poline.ordered_qty - poline.received_qty:
+            raise InsufficientStockError(
+                "入库数量超过采购订单剩余数量",
+                details={
+                    "purchase_order_line_id": purchase_order_line_id,
+                    "remaining": str(poline.ordered_qty - poline.received_qty),
+                    "requested": str(quantity),
+                },
+            )
+        poline.received_qty += quantity
     warehouse = await get_warehouse(db, organization_id=organization_id, warehouse_id=warehouse_id)
     if location_id:
         location = (
@@ -399,6 +426,21 @@ async def receive_stock(
             "on_hand_after": str(balance.on_hand),
         },
     )
+    if purchase_order_line_id and poline is not None:
+        po = await db.get(PurchaseOrder, poline.purchase_order_id)
+        if po is not None:
+            po_lines = (
+                await db.execute(
+                    select(PurchaseOrderLine).where(
+                        PurchaseOrderLine.purchase_order_id == po.id
+                    )
+                )
+            ).scalars().all()
+            po.status = (
+                "RECEIVED"
+                if all(line.received_qty == line.ordered_qty for line in po_lines)
+                else "PARTIAL"
+            )
     return balance, lot, movement
 
 

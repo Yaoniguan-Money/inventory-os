@@ -13,7 +13,7 @@ from app.domains.integrations.models import EventLog
 from app.domains.market.models import MarketQuote
 from app.domains.orders.models import Customer, SalesOrder, SalesOrderLine
 from app.domains.pricing.models import InternalPriceSnapshot
-from app.domains.purchasing.models import PurchaseOrder, PurchaseOrderLine
+from app.domains.warehouse.atp import IncomingAllocator, incoming_before
 from app.domains.warehouse.models import InventoryBalance
 from app.domains.warehouse.service import expired_lot_quantity
 
@@ -37,83 +37,6 @@ async def _latest_price(
         )
     ).scalar_one_or_none()
     return snapshot.price if snapshot else None
-
-
-async def _incoming_before(
-    db: AsyncSession, organization_id: str, product_id: str, deadline: datetime | None
-) -> Decimal:
-    stmt = (
-        select(PurchaseOrderLine)
-        .join(PurchaseOrder, PurchaseOrder.id == PurchaseOrderLine.purchase_order_id)
-        .where(
-            PurchaseOrder.organization_id == uuid.UUID(organization_id),
-            PurchaseOrderLine.product_id == uuid.UUID(product_id),
-            PurchaseOrder.status.in_(["CONFIRMED", "PARTIAL"]),
-        )
-    )
-    if deadline is not None:
-        stmt = stmt.where(
-            func.coalesce(PurchaseOrderLine.expected_at, PurchaseOrder.expected_at) <= deadline
-        )
-    lines = (await db.execute(stmt)).scalars().all()
-    return sum((line.ordered_qty - line.received_qty for line in lines), Decimal("0"))
-
-
-async def _incoming_total(
-    db: AsyncSession, organization_id: str, product_id: str
-) -> Decimal:
-    stmt = (
-        select(PurchaseOrderLine)
-        .join(PurchaseOrder, PurchaseOrder.id == PurchaseOrderLine.purchase_order_id)
-        .where(
-            PurchaseOrder.organization_id == uuid.UUID(organization_id),
-            PurchaseOrderLine.product_id == uuid.UUID(product_id),
-            PurchaseOrder.status.in_(["CONFIRMED", "PARTIAL"]),
-        )
-    )
-    lines = (await db.execute(stmt)).scalars().all()
-    return sum((line.ordered_qty - line.received_qty for line in lines), Decimal("0"))
-
-
-async def _incoming_buckets(
-    db: AsyncSession, organization_id: str, product_id: str
-) -> list[list]:
-    rows = (
-        await db.execute(
-            select(PurchaseOrderLine, PurchaseOrder)
-            .join(PurchaseOrder, PurchaseOrder.id == PurchaseOrderLine.purchase_order_id)
-            .where(
-                PurchaseOrder.organization_id == uuid.UUID(organization_id),
-                PurchaseOrderLine.product_id == uuid.UUID(product_id),
-                PurchaseOrder.status.in_(["CONFIRMED", "PARTIAL"]),
-            )
-        )
-    ).all()
-    buckets: list[list] = []
-    for line, po in rows:
-        qty = line.ordered_qty - line.received_qty
-        if qty <= 0:
-            continue
-        eta = line.expected_at or po.expected_at
-        buckets.append([eta, qty])
-    buckets.sort(key=lambda bucket: (bucket[0] is None, bucket[0] or datetime.max.replace(tzinfo=UTC)))
-    return buckets
-
-
-def _consume_buckets(
-    buckets: list[list], deadline: datetime | None, need: Decimal
-) -> Decimal:
-    allocated = Decimal("0")
-    for bucket in buckets:
-        if allocated >= need:
-            break
-        eta, qty = bucket
-        if deadline is not None and eta is not None and eta > deadline:
-            continue
-        take = min(qty, need - allocated)
-        bucket[1] -= take
-        allocated += take
-    return allocated
 
 
 async def dashboard(db: AsyncSession, *, organization_id: str) -> dict:
@@ -192,7 +115,7 @@ async def dashboard(db: AsyncSession, *, organization_id: str) -> dict:
     )
 
     # ATP：incoming 池使用全量在途（不再只装 7 日），预留覆盖以可售库存为上限。
-    incoming_buckets: dict[str, list[list]] = {}
+    allocators: dict[str, IncomingAllocator] = {}
     sellable_pools: dict[str, Decimal] = {}
     risky_order_ids: set[str] = set()
     sorted_due_lines = sorted(
@@ -204,9 +127,9 @@ async def dashboard(db: AsyncSession, *, organization_id: str) -> dict:
     )
     for line, order in sorted_due_lines:
         product_id = str(line.product_id)
-        if product_id not in incoming_buckets:
-            incoming_buckets[product_id] = await _incoming_buckets(
-                db, organization_id, product_id
+        if product_id not in allocators:
+            allocators[product_id] = await IncomingAllocator.build(
+                db, organization_id=organization_id, product_id=product_id
             )
             balances = by_product.get(product_id, [])
             expired = await expired_lot_quantity(
@@ -220,10 +143,8 @@ async def dashboard(db: AsyncSession, *, organization_id: str) -> dict:
         covered = min(line.reserved_qty, sellable_pools[product_id])
         sellable_pools[product_id] -= covered
         remaining = line.ordered_qty - line.delivered_qty
-        allocated = _consume_buckets(
-            incoming_buckets[product_id],
-            deadline,
-            max(remaining - covered, Decimal("0")),
+        allocated = allocators[product_id].allocate(
+            deadline, max(remaining - covered, Decimal("0"))
         )
         if remaining > covered + allocated:
             risky_order_ids.add(str(order.id))
@@ -291,7 +212,9 @@ async def dashboard(db: AsyncSession, *, organization_id: str) -> dict:
             sellable_pool -= covered
             reserved_for_due += covered
         unreserved_due = max(due_demand - reserved_for_due, Decimal("0"))
-        incoming = await _incoming_before(db, organization_id, str(product.id), horizon)
+        incoming = await incoming_before(
+            db, organization_id=organization_id, product_id=str(product.id), deadline=horizon
+        )
         shortage = unreserved_due - available - incoming
         if shortage > 0:
             pressure_7d.append(
