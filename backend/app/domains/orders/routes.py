@@ -1,0 +1,143 @@
+from __future__ import annotations
+
+import uuid
+
+from fastapi import APIRouter, Depends
+from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from app.core.database import get_db
+from app.core.errors import ConflictError
+from app.core.permissions import require_scope
+from app.core.security import CurrentUser
+from app.domains.orders.models import Customer
+from app.domains.orders.schemas import (
+    CustomerCreate,
+    CustomerOut,
+    FulfillRequest,
+    SalesOrderCreate,
+    SalesOrderOut,
+)
+from app.domains.orders.service import (
+    build_order_out,
+    cancel_order,
+    confirm_order,
+    create_sales_order,
+    fulfill_order,
+    get_order,
+    list_customer_orders,
+)
+
+router = APIRouter(tags=["orders"])
+
+
+@router.get("/customers", response_model=list[CustomerOut])
+async def list_customers(
+    db: AsyncSession = Depends(get_db),
+    user: CurrentUser = Depends(require_scope("orders:read")),
+) -> list[CustomerOut]:
+    rows = (
+        await db.execute(
+            select(Customer).where(Customer.organization_id == uuid.UUID(user.organization_id))
+            .order_by(Customer.code)
+        )
+    ).scalars().all()
+    return [CustomerOut.model_validate(row) for row in rows]
+
+
+@router.post("/customers", response_model=CustomerOut, status_code=201)
+async def create_customer(
+    payload: CustomerCreate,
+    db: AsyncSession = Depends(get_db),
+    user: CurrentUser = Depends(require_scope("orders:write")),
+) -> CustomerOut:
+    existing = (
+        await db.execute(
+            select(Customer).where(
+                Customer.organization_id == uuid.UUID(user.organization_id),
+                Customer.code == payload.code,
+            )
+        )
+    ).scalar_one_or_none()
+    if existing is not None:
+        raise ConflictError(f"客户编码已存在: {payload.code}")
+    customer = Customer(organization_id=uuid.UUID(user.organization_id), **payload.model_dump())
+    db.add(customer)
+    await db.commit()
+    return CustomerOut.model_validate(customer)
+
+
+@router.get("/orders", response_model=list[SalesOrderOut])
+async def list_orders(
+    db: AsyncSession = Depends(get_db),
+    user: CurrentUser = Depends(require_scope("orders:read")),
+) -> list[SalesOrderOut]:
+    orders = await list_customer_orders(db, organization_id=user.organization_id)
+    return [SalesOrderOut.model_validate(await build_order_out(db, user.organization_id, o)) for o in orders]
+
+
+@router.post("/orders", response_model=SalesOrderOut, status_code=201)
+async def create_order_route(
+    payload: SalesOrderCreate,
+    db: AsyncSession = Depends(get_db),
+    user: CurrentUser = Depends(require_scope("orders:write")),
+) -> SalesOrderOut:
+    order = await create_sales_order(
+        db, organization_id=user.organization_id, actor_id=user.user_id, payload=payload
+    )
+    await db.commit()
+    return SalesOrderOut.model_validate(await build_order_out(db, user.organization_id, order))
+
+
+@router.get("/orders/{order_id}", response_model=SalesOrderOut)
+async def get_order_route(
+    order_id: str,
+    db: AsyncSession = Depends(get_db),
+    user: CurrentUser = Depends(require_scope("orders:read")),
+) -> SalesOrderOut:
+    order = await get_order(db, organization_id=user.organization_id, order_id=order_id)
+    return SalesOrderOut.model_validate(await build_order_out(db, user.organization_id, order))
+
+
+@router.post("/orders/{order_id}/confirm", response_model=SalesOrderOut)
+async def confirm_order_route(
+    order_id: str,
+    db: AsyncSession = Depends(get_db),
+    user: CurrentUser = Depends(require_scope("orders:confirm")),
+) -> SalesOrderOut:
+    order, _ = await confirm_order(
+        db, organization_id=user.organization_id, actor_id=user.user_id, order_id=order_id
+    )
+    await db.commit()
+    return SalesOrderOut.model_validate(await build_order_out(db, user.organization_id, order))
+
+
+@router.post("/orders/{order_id}/fulfill", response_model=SalesOrderOut)
+async def fulfill_order_route(
+    order_id: str,
+    payload: FulfillRequest,
+    db: AsyncSession = Depends(get_db),
+    user: CurrentUser = Depends(require_scope("orders:fulfill")),
+) -> SalesOrderOut:
+    order = await fulfill_order(
+        db,
+        organization_id=user.organization_id,
+        actor_id=user.user_id,
+        order_id=order_id,
+        fulfill_lines=[item.model_dump() for item in payload.lines],
+    )
+    await db.commit()
+    return SalesOrderOut.model_validate(await build_order_out(db, user.organization_id, order))
+
+
+@router.post("/orders/{order_id}/cancel", response_model=SalesOrderOut)
+async def cancel_order_route(
+    order_id: str,
+    db: AsyncSession = Depends(get_db),
+    user: CurrentUser = Depends(require_scope("orders:write")),
+) -> SalesOrderOut:
+    order = await cancel_order(
+        db, organization_id=user.organization_id, actor_id=user.user_id, order_id=order_id
+    )
+    await db.commit()
+    return SalesOrderOut.model_validate(await build_order_out(db, user.organization_id, order))

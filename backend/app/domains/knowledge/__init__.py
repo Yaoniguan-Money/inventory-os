@@ -1,0 +1,1 @@
+"""Internal knowledge base domain."""

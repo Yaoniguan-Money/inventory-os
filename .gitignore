@@ -1,0 +1,43 @@
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.coverage
+htmlcov/
+*.egg-info/
+
+# Node
+node_modules/
+dist/
+coverage/
+.vite/
+playwright-report/
+test-results/
+
+# Env & secrets
+.env
+.env.local
+.env.*.local
+*.pem
+*.key
+*.secret
+
+# OS / editor
+.DS_Store
+Thumbs.db
+.idea/
+*.suo
+*.ntvs*
+*.user
+*.userosscache
+*.sln.docstates
+
+# Docker local volumes
+pgdata/
+
+# Misc
+*.log
+.scratch/
