@@ -35,6 +35,12 @@ async def receive_external_event(
     db: AsyncSession = Depends(get_db),
     api_key=Depends(authenticate_api_key),
 ) -> IntegrationEventResult:
+    if payload.schema_version != "1.0":
+        return IntegrationEventResult(
+            status="rejected",
+            event_id=payload.event_id,
+            message=f"不支持的 schema_version: {payload.schema_version}（当前支持 1.0）",
+        )
     required_scope = EVENT_SCOPE.get(payload.type)
     if required_scope is not None and required_scope not in (api_key.scopes or []):
         raise PermissionDeniedError(f"API Key 缺少权限: {required_scope}")

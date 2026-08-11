@@ -83,6 +83,7 @@ class WorkbenchItem(BaseModel):
     expired_qty: Decimal = Decimal("0")
     projected: Decimal = Decimal("0")
     incoming: Decimal
+    incoming_before_7d: Decimal = Decimal("0")
     demand_7d: Decimal
     reserved_for_due: Decimal = Decimal("0")
     unreserved_due: Decimal = Decimal("0")

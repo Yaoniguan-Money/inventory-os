@@ -62,6 +62,51 @@ async def _incoming_total(
     return sum((line.ordered_qty - line.received_qty for line in lines), Decimal("0"))
 
 
+async def _incoming_buckets(
+    db: AsyncSession, organization_id: str, product_id: str
+) -> list[list]:
+    """按 PO ETA 排序的在途时间桶：[[eta, remaining_qty], ...]，eta 为 None 表示未定。"""
+
+    rows = (
+        await db.execute(
+            select(PurchaseOrderLine, PurchaseOrder)
+            .join(PurchaseOrder, PurchaseOrder.id == PurchaseOrderLine.purchase_order_id)
+            .where(
+                PurchaseOrder.organization_id == uuid.UUID(organization_id),
+                PurchaseOrderLine.product_id == uuid.UUID(product_id),
+                PurchaseOrder.status.in_(["CONFIRMED", "PARTIAL"]),
+            )
+        )
+    ).all()
+    buckets: list[list] = []
+    for line, po in rows:
+        qty = line.ordered_qty - line.received_qty
+        if qty <= 0:
+            continue
+        eta = line.expected_at or po.expected_at
+        buckets.append([eta, qty])
+    buckets.sort(key=lambda bucket: (bucket[0] is None, bucket[0] or datetime.max.replace(tzinfo=UTC)))
+    return buckets
+
+
+def _consume_buckets(
+    buckets: list[list], deadline: datetime | None, need: Decimal
+) -> Decimal:
+    """按 ETA <= deadline 逐桶消费在途；返回实际可分配数量。"""
+
+    allocated = Decimal("0")
+    for bucket in buckets:
+        if allocated >= need:
+            break
+        eta, qty = bucket
+        if deadline is not None and eta is not None and eta > deadline:
+            continue
+        take = min(qty, need - allocated)
+        bucket[1] -= take
+        allocated += take
+    return allocated
+
+
 async def _upsert_alert(
     db: AsyncSession,
     *,
@@ -223,7 +268,7 @@ async def recalculate_product(
     sellable_pool = max(on_hand - expired_qty, Decimal("0"))
     reserved_covered_total = Decimal("0")
     order_risks: list[dict] = []
-    incoming_pool = await _incoming_total(db, organization_id, pid)
+    incoming_buckets = await _incoming_buckets(db, organization_id, pid)
     for line, order in demand_sorted:
         remaining = line.ordered_qty - line.delivered_qty
         covered = min(line.reserved_qty, sellable_pool)
@@ -233,8 +278,9 @@ async def recalculate_product(
         incoming_for_line = await _incoming_before(
             db, organization_id, str(line.product_id), deadline
         )
-        allocated_incoming = min(incoming_for_line, incoming_pool)
-        incoming_pool -= allocated_incoming
+        allocated_incoming = _consume_buckets(
+            incoming_buckets, deadline, max(remaining - covered, Decimal("0"))
+        )
         if remaining > 0 and remaining > covered + allocated_incoming:
             order_risks.append(
                 {
@@ -447,6 +493,7 @@ async def recalculate_product(
         avg_snapshot
         and market_buy
         and avg_snapshot.price > 0
+        and market_buy.currency == product.currency
         and (market_buy.unit is None or market_buy.unit == product.unit)
         and (market_buy.basis is None or market_buy.basis != "FX")
     ):

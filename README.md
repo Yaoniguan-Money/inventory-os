@@ -10,7 +10,7 @@
 - `frontend/`（React 19 · TypeScript · Vite · Tailwind CSS v4 · TanStack Query · React Router · GSAP · ECharts）
 - 持久事件流：`EventLog` + SSE after cursor（服务重启/断线可恢复）
 - Provider 边界：AI / Market / Forecast 均可替换；缺真实 Key 时使用明确标记的 Demo/Mock Provider
-- 测试：pytest（105 项后端）、Vitest（前端）、Playwright（2 条 E2E：核心订单链路 + 智能出入库）、GitHub Actions CI（含 E2E Job）
+- 测试：pytest（114 项后端）、Vitest（前端）、Playwright（2 条 E2E：核心订单链路 + 智能出入库）、GitHub Actions CI（含 E2E Job）
 
 ## 快速开始（Docker）
 

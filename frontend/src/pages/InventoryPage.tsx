@@ -45,6 +45,9 @@ export default function InventoryPage() {
     quantity: '',
     unit_cost: '',
     lot_code: '',
+    location_id: '',
+    expires_at: '',
+    purchase_order_line_id: '',
   })
 
   const inventory = useQuery({
@@ -59,6 +62,26 @@ export default function InventoryPage() {
     queryKey: ['warehouses'],
     queryFn: () => api.get<Array<{ id: string; code: string; name: string }>>('/warehouses'),
   })
+  const locations = useQuery({
+    queryKey: ['locations', form.warehouse_id],
+    queryFn: () =>
+      api.get<Array<{ id: string; code: string; name: string }>>(
+        `/warehouses/${form.warehouse_id}/locations`,
+      ),
+    enabled: !!form.warehouse_id,
+  })
+  const purchaseOrders = useQuery({
+    queryKey: ['purchase-orders'],
+    queryFn: () =>
+      api.get<
+        Array<{
+          id: string
+          po_no: string
+          status: string
+          lines: Array<{ id: string; product_id: string; incoming_qty: string }>
+        }>
+      >('/purchase-orders'),
+  })
 
   const mutation = useMutation({
     mutationFn: (payload: Record<string, unknown>) =>
@@ -68,7 +91,16 @@ export default function InventoryPage() {
       queryClient.invalidateQueries({ queryKey: ['products'] })
       setReceiveOpen(false)
       setAdjustOpen(false)
-      setForm({ product_id: '', warehouse_id: '', quantity: '', unit_cost: '', lot_code: '' })
+      setForm({
+        product_id: '',
+        warehouse_id: '',
+        quantity: '',
+        unit_cost: '',
+        lot_code: '',
+        location_id: '',
+        expires_at: '',
+        purchase_order_line_id: '',
+      })
     },
     onError: setError,
   })
@@ -185,6 +217,8 @@ export default function InventoryPage() {
           setForm={setForm}
           products={products.data ?? []}
           warehouses={warehouses.data ?? []}
+          locations={locations.data ?? []}
+          purchaseOrders={purchaseOrders.data ?? []}
           showCost
           onSubmit={() =>
             mutation.mutate({
@@ -193,6 +227,9 @@ export default function InventoryPage() {
               quantity: form.quantity,
               unit_cost: form.unit_cost || null,
               lot_code: form.lot_code || null,
+              location_id: form.location_id || null,
+              expires_at: form.expires_at ? new Date(form.expires_at).toISOString() : null,
+              purchase_order_line_id: form.purchase_order_line_id || null,
             })
           }
           busy={mutation.isPending}
@@ -239,6 +276,8 @@ export default function InventoryPage() {
           setForm={setForm}
           products={products.data ?? []}
           warehouses={warehouses.data ?? []}
+          locations={[]}
+          purchaseOrders={[]}
           onSubmit={() =>
             mutation.mutate({
               product_id: form.product_id,
@@ -260,6 +299,9 @@ interface StockFormState {
   quantity: string
   unit_cost: string
   lot_code: string
+  location_id: string
+  expires_at: string
+  purchase_order_line_id: string
 }
 
 function StockForm({
@@ -267,6 +309,8 @@ function StockForm({
   setForm,
   products,
   warehouses,
+  locations,
+  purchaseOrders,
   onSubmit,
   busy,
   showCost,
@@ -275,6 +319,13 @@ function StockForm({
   setForm: React.Dispatch<React.SetStateAction<StockFormState>>
   products: Array<{ id: string; sku: string; name: string }>
   warehouses: Array<{ id: string; code: string; name: string }>
+  locations: Array<{ id: string; code: string; name: string }>
+  purchaseOrders: Array<{
+    id: string
+    po_no: string
+    status: string
+    lines: Array<{ id: string; product_id: string; incoming_qty: string }>
+  }>
   onSubmit: () => void
   busy: boolean
   showCost?: boolean
@@ -318,6 +369,49 @@ function StockForm({
           onChange={(e) => setForm({ ...form, unit_cost: e.target.value })}
           className="w-full rounded-lg border border-slate-700 bg-slate-800/70 px-3 py-2 text-sm outline-none"
         />
+      )}
+      {showCost && (
+        <select
+          value={form.location_id}
+          onChange={(e) => setForm({ ...form, location_id: e.target.value })}
+          className="w-full rounded-lg border border-slate-700 bg-slate-800/70 px-3 py-2 text-sm outline-none"
+        >
+          <option value="">选择库位（可选）</option>
+          {locations.map((l) => (
+            <option key={l.id} value={l.id}>
+              {l.code} · {l.name}
+            </option>
+          ))}
+        </select>
+      )}
+      {showCost && (
+        <input
+          type="datetime-local"
+          value={form.expires_at}
+          onChange={(e) => setForm({ ...form, expires_at: e.target.value })}
+          className="w-full rounded-lg border border-slate-700 bg-slate-800/70 px-3 py-2 text-sm outline-none"
+        />
+      )}
+      {showCost && (
+        <select
+          value={form.purchase_order_line_id}
+          onChange={(e) => setForm({ ...form, purchase_order_line_id: e.target.value })}
+          className="w-full rounded-lg border border-slate-700 bg-slate-800/70 px-3 py-2 text-sm outline-none"
+        >
+          <option value="">关联采购订单（可选）</option>
+          {purchaseOrders
+            .filter((po) => ['CONFIRMED', 'PARTIAL'].includes(po.status))
+            .flatMap((po) =>
+              po.lines
+                .filter((l) => Number(l.incoming_qty) > 0 && l.product_id === form.product_id)
+                .map((l) => ({ po_no: po.po_no, line_id: l.id, incoming: l.incoming_qty })),
+            )
+            .map((item) => (
+              <option key={item.line_id} value={item.line_id}>
+                {item.po_no}（在途 {item.incoming}）
+              </option>
+            ))}
+        </select>
       )}
       {showCost && (
         <input

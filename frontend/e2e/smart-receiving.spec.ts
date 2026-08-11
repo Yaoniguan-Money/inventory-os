@@ -21,6 +21,8 @@ test('智能出入库：扫码识别商品 → 确认入库 → 库存增加', a
   await candidate.first().click()
 
   await dialog.locator('select').nth(1).selectOption({ label: 'WH01 · 华东一号仓' })
+  await dialog.locator('select').nth(2).selectOption({ label: 'A-01 · A区01' })
+  await dialog.locator('input[type="datetime-local"]').fill('2026-09-01T10:00')
   await dialog.getByPlaceholder('数量 *').fill('10')
   await dialog.getByRole('button', { name: '提交' }).click()
   await expect(dialog).not.toBeVisible()

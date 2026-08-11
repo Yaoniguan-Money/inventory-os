@@ -55,6 +55,7 @@ class SalesOrderLineOut(BaseModel):
     required_at: datetime | None
     available: Decimal | None = None
     incoming: Decimal | None = None
+    expired_qty: Decimal | None = None
     fulfillment_risk: bool = False
 
 

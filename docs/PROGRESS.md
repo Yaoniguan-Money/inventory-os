@@ -259,6 +259,23 @@
   并在 UI 注明“按当前预留推算”，不再冒充历史 Available。
 - 新增 15 项回归测试；当前后端测试 105 项全通过，前端构建/测试与 2 条 E2E 通过。
 
+## 第七轮审计修复（在途口径 / 时间桶 ATP / 口径统一 / 并发成本 / 币种 / UI 与版本化）
+
+- P0 工作台 7 日缺口：区分 `incoming`（总在途）与 `incoming_before_7d`（7 日内到货），
+  `shortage_7d` 只用 7 日内到货（30 天后的在途不再掩盖缺口，测试覆盖两方向）。
+- P0/P1 时间桶 ATP：Health / Dashboard 改为按 PO ETA 建立时间桶并逐桶消费，
+  早期订单不再重复借用同一批到货，晚于订单截止的在途不再被误分配（测试覆盖两单 + 多桶场景）。
+- P1 订单详情口径统一：Available 扣过期量，`fulfillment_risk` 使用“可售覆盖 + 期限前在途”，
+  预留实物过期后订单详情同步标风险（测试覆盖）。
+- P1 跨仓并发成本：`receive_stock` 对 Product 行加锁，跨仓同时入库时移动平均成本保持正确
+  （并发测试验证最终 90）。
+- P1 PRICE_PRESSURE 增加币种一致条件（Health 与 Dashboard 旁路统一），不同币种只展示不告警（测试覆盖）。
+- P1 负 Adjust：保证调整后“未过期可售实物”仍覆盖 Reservation，否则 409（测试覆盖临界 ±1）。
+- P1/P2 智能入库 UI：入库表单补齐库位、有效期、关联采购订单（产品详情与仓库中心两处），
+  E2E 智能出入库故事实际选择库位并填写有效期。
+- P2 Integration schema_version 版本化：未知版本直接 `rejected`，不再“收了字段不校验”（测试覆盖 2.0）。
+- 新增 9 项回归测试；当前后端测试 114 项全通过，前端构建/测试与 2 条 E2E 通过。
+
 ## Definition of Done 核对
 
 - [x] private repo 创建：https://github.com/Yaoniguan-Money/inventory-os
@@ -282,7 +299,7 @@
 - [x] 采购中心统一视图（库存/在途/需求/历史采购价/供应商/行情）
 - [x] ForecastProvider / capability / API 存在且 disabled；UI 无伪预测
 - [x] 未实现面向客户客服助手
-- [x] 权限测试、核心库存/订单测试通过（pytest 105 项，含跨租户/权限绕过/批次边界/成本快照/多仓库/API Key scope/AI Tool scope/健康公式/跨仓预留/过期批次/ATP/实体归属/并发/预留覆盖回归）
+- [x] 权限测试、核心库存/订单测试通过（pytest 114 项，含跨租户/权限绕过/批次边界/成本快照/多仓库/API Key scope/AI Tool scope/健康公式/跨仓预留/过期批次/ATP/实体归属/并发/预留覆盖/时间桶 ATP/币种一致性回归）
 - [x] Playwright 核心链路通过
 - [x] CI 工作流已配置；本地等价检查（ruff/mypy/pytest/build/typecheck/lint/test）全绿，推送后由 GitHub Actions 验证
 - [x] docs/PROGRESS.md 处于最终完成状态

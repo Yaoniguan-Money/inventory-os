@@ -224,6 +224,7 @@ async def receive_stock(
                 Product.id == uuid.UUID(product_id),
                 Product.organization_id == uuid.UUID(organization_id),
             )
+            .with_for_update()
         )
     ).scalar_one_or_none()
     if product is None:
@@ -437,6 +438,23 @@ async def adjust_stock(
                 "adjustment": str(quantity),
             },
         )
+    if quantity < 0:
+        expired_before = await expired_lot_quantity(
+            db,
+            organization_id=organization_id,
+            product_id=product_id,
+            warehouse_id=warehouse_id,
+        )
+        if new_on_hand - expired_before < balance.reserved:
+            raise InsufficientStockError(
+                "调整后未过期可售库存无法覆盖已预留量（预留不可被过期库存替代）",
+                details={
+                    "on_hand_after": str(new_on_hand),
+                    "expired": str(expired_before),
+                    "reserved": str(balance.reserved),
+                    "adjustment": str(quantity),
+                },
+            )
     before = {"on_hand": str(balance.on_hand), "version": balance.version}
     balance.on_hand = new_on_hand
     balance.version += 1

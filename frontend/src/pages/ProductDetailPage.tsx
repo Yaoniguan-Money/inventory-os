@@ -122,8 +122,30 @@ export default function ProductDetailPage() {
     unit_cost: '',
     lot_code: '',
     expires_at: '',
+    location_id: '',
+    purchase_order_line_id: '',
   })
   const [priceForm, setPriceForm] = useState({ price: '' })
+  const locations = useQuery({
+    queryKey: ['locations', receiveForm.warehouse_id],
+    queryFn: () =>
+      api.get<Array<{ id: string; code: string; name: string }>>(
+        `/warehouses/${receiveForm.warehouse_id}/locations`,
+      ),
+    enabled: !!receiveForm.warehouse_id,
+  })
+  const purchaseOrders = useQuery({
+    queryKey: ['purchase-orders'],
+    queryFn: () =>
+      api.get<
+        Array<{
+          id: string
+          po_no: string
+          status: string
+          lines: Array<{ id: string; product_id: string; incoming_qty: string }>
+        }>
+      >('/purchase-orders'),
+  })
 
   const receiveMutation = useMutation({
     mutationFn: () =>
@@ -134,13 +156,23 @@ export default function ProductDetailPage() {
         unit_cost: receiveForm.unit_cost || null,
         lot_code: receiveForm.lot_code || null,
         expires_at: receiveForm.expires_at || null,
+        location_id: receiveForm.location_id || null,
+        purchase_order_line_id: receiveForm.purchase_order_line_id || null,
       }),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['products'] })
       queryClient.invalidateQueries({ queryKey: ['inventory'] })
       queryClient.invalidateQueries({ queryKey: ['dashboard'] })
       setReceiveOpen(false)
-      setReceiveForm({ warehouse_id: '', quantity: '', unit_cost: '', lot_code: '', expires_at: '' })
+      setReceiveForm({
+        warehouse_id: '',
+        quantity: '',
+        unit_cost: '',
+        lot_code: '',
+        expires_at: '',
+        location_id: '',
+        purchase_order_line_id: '',
+      })
     },
     onError: setError,
   })
@@ -556,6 +588,39 @@ export default function ProductDetailPage() {
             onChange={(e) => setReceiveForm({ ...receiveForm, expires_at: e.target.value })}
             className="w-full rounded-lg border border-slate-700 bg-slate-800/70 px-3 py-2 text-sm outline-none"
           />
+          <select
+            value={receiveForm.location_id}
+            onChange={(e) => setReceiveForm({ ...receiveForm, location_id: e.target.value })}
+            className="w-full rounded-lg border border-slate-700 bg-slate-800/70 px-3 py-2 text-sm outline-none"
+          >
+            <option value="">选择库位（可选）</option>
+            {locations.data?.map((l) => (
+              <option key={l.id} value={l.id}>
+                {l.code} · {l.name}
+              </option>
+            ))}
+          </select>
+          <select
+            value={receiveForm.purchase_order_line_id}
+            onChange={(e) =>
+              setReceiveForm({ ...receiveForm, purchase_order_line_id: e.target.value })
+            }
+            className="w-full rounded-lg border border-slate-700 bg-slate-800/70 px-3 py-2 text-sm outline-none"
+          >
+            <option value="">关联采购订单（可选）</option>
+            {(purchaseOrders.data ?? [])
+              .filter((po) => ['CONFIRMED', 'PARTIAL'].includes(po.status))
+              .flatMap((po) =>
+                po.lines
+                  .filter((l) => l.product_id === productId && Number(l.incoming_qty) > 0)
+                  .map((l) => ({ po_no: po.po_no, line_id: l.id, incoming: l.incoming_qty })),
+              )
+              .map((item) => (
+                <option key={item.line_id} value={item.line_id}>
+                  {item.po_no}（在途 {item.incoming}）
+                </option>
+              ))}
+          </select>
           <Button
             className="w-full"
             disabled={!receiveForm.warehouse_id || !receiveForm.quantity || receiveMutation.isPending}

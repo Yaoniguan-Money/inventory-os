@@ -412,6 +412,9 @@ async def workbench(db: AsyncSession, *, organization_id: str) -> list[dict]:
         )
         available = max(on_hand - reserved - expired_qty, Decimal("0"))
         incoming = await incoming_for_product(db, organization_id=organization_id, product_id=pid)
+        incoming_before_7d = await incoming_for_product(
+            db, organization_id=organization_id, product_id=pid, before=horizon
+        )
         demand_lines = (
             await db.execute(
                 select(SalesOrderLine)
@@ -466,10 +469,13 @@ async def workbench(db: AsyncSession, *, organization_id: str) -> list[dict]:
                 "expired_qty": expired_qty,
                 "projected": available + incoming,
                 "incoming": incoming,
+                "incoming_before_7d": incoming_before_7d,
                 "demand_7d": demand,
                 "reserved_for_due": reserved_covered,
                 "unreserved_due": unreserved_due,
-                "shortage_7d": max(unreserved_due - available - incoming, Decimal("0")),
+                "shortage_7d": max(
+                    unreserved_due - available - incoming_before_7d, Decimal("0")
+                ),
                 "last_purchase_price": last_purchase.price if last_purchase else None,
                 "weighted_avg_cost": avg_cost.price if avg_cost else None,
                 "market_quotes": market_quotes,

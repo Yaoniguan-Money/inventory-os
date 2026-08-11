@@ -91,6 +91,7 @@ def order_out(
                 "required_at": line.required_at,
                 "available": line_meta.get(str(line.id), {}).get("available"),
                 "incoming": line_meta.get(str(line.id), {}).get("incoming"),
+                "expired_qty": line_meta.get(str(line.id), {}).get("expired_qty"),
                 "fulfillment_risk": line_meta.get(str(line.id), {}).get(
                     "fulfillment_risk", False
                 ),
@@ -128,7 +129,12 @@ async def build_order_out(db: AsyncSession, organization_id: str, order: SalesOr
         ).scalars().all()
         on_hand = sum((b.on_hand for b in balances), Decimal("0"))
         reserved = sum((b.reserved for b in balances), Decimal("0"))
-        available = on_hand - reserved
+        expired = await expired_lot_quantity(
+            db, organization_id=organization_id, product_id=str(line.product_id)
+        )
+        available = max(on_hand - reserved - expired, Decimal("0"))
+        sellable = max(on_hand - expired, Decimal("0"))
+        covered = min(line.reserved_qty, sellable)
         deadline = line.required_at or order.required_at
         incoming = await incoming_for_product(
             db, organization_id=organization_id, product_id=str(line.product_id), before=deadline
@@ -137,7 +143,8 @@ async def build_order_out(db: AsyncSession, organization_id: str, order: SalesOr
         line_meta[str(line.id)] = {
             "available": available,
             "incoming": incoming,
-            "fulfillment_risk": remaining > line.reserved_qty + incoming,
+            "expired_qty": expired,
+            "fulfillment_risk": remaining > covered + incoming,
         }
     return order_out(order, customer, list(lines), products, line_meta)
 
