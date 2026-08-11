@@ -15,6 +15,7 @@ import {
   Spinner,
   statusTone,
 } from '../components/ui.tsx'
+import TrendChart from '../components/TrendChart.tsx'
 
 interface Overview {
   product: {
@@ -31,6 +32,7 @@ interface Overview {
     reserved: string
     available: string
     incoming: string
+    due_7d: string
     lot_count: number
   }
   prices: {
@@ -46,6 +48,17 @@ interface Overview {
     title: string
     evidence: Record<string, unknown>
   }>
+  trends: {
+    on_hand: Array<{ date: string; value: string }>
+    available: Array<{ date: string; value: string }>
+    weighted_avg_cost: Array<{ date: string; value: string }>
+    last_purchase_price: Array<{ date: string; value: string }>
+    actual_sell_price: Array<{ date: string; value: string }>
+    market_buy_domestic: Array<{ date: string; value: string }>
+    market_sell_domestic: Array<{ date: string; value: string }>
+    market_buy_international: Array<{ date: string; value: string }>
+    market_sell_international: Array<{ date: string; value: string }>
+  }
   timeline: Array<{
     sequence_id: number
     event_type: string
@@ -191,6 +204,12 @@ export default function ProductDetailPage() {
           </div>
         </Card>
         <Card>
+          <div className="text-xs text-slate-400">未来 7 日待交付</div>
+          <div className="tabular mt-1 text-2xl font-semibold text-red-300">
+            <GsapNumber value={Number(data.inventory.due_7d)} />
+          </div>
+        </Card>
+        <Card>
           <div className="text-xs text-slate-400">库存健康分</div>
           <div className="tabular mt-1 text-2xl font-semibold text-slate-100">
             {data.alerts.length
@@ -227,24 +246,44 @@ export default function ProductDetailPage() {
             <PriceCell label="最近成交价" value={fmtMoney(data.prices.actual_sell_price)} />
           </div>
         </Card>
-        <Card title="市场价格（外部）" action={<Button variant="outline" className="text-xs" onClick={() => queryClient.invalidateQueries({ queryKey: ['market'] })}>刷新</Button>}>
+        <Card
+          title="市场价格（外部 · 国内 / 国际）"
+          action={
+            <Button
+              variant="outline"
+              className="text-xs"
+              onClick={() => queryClient.invalidateQueries({ queryKey: ['market'] })}
+            >
+              刷新
+            </Button>
+          }
+        >
           <div className="grid grid-cols-2 gap-3">
-            {['MARKET_BUY', 'MARKET_SELL'].map((kind) => {
-              const quote = market.data?.quotes.find((q) => q.quote_kind === kind)
-              return (
-                <div key={kind} className="rounded-lg border border-slate-800 bg-slate-900/60 p-3">
-                  <div className="text-xs text-slate-400">
-                    {kind === 'MARKET_BUY' ? '市场采购价' : '市场常见售价'}
-                  </div>
-                  <div className="tabular mt-1 text-lg font-semibold text-slate-100">
-                    {quote ? fmtMoney(quote.price, quote.currency) : '—'}
-                  </div>
-                  <div className="mt-1 text-[11px] text-slate-500">
-                    {quote ? `${quote.source} · ${quote.region} · ${fmtDate(quote.observed_at)}` : '暂无行情'}
-                  </div>
+            {(['DOMESTIC', 'INTERNATIONAL'] as const).map((region) => (
+              <div key={region} className="rounded-lg border border-slate-800 bg-slate-900/60 p-3">
+                <div className="mb-2 text-xs text-slate-400">
+                  {region === 'DOMESTIC' ? '国内' : '国际'}
                 </div>
-              )
-            })}
+                {['MARKET_BUY', 'MARKET_SELL'].map((kind) => {
+                  const quote = market.data?.quotes.find(
+                    (q) => q.quote_kind === kind && q.region === region,
+                  )
+                  return (
+                    <div key={kind} className="mb-2 last:mb-0">
+                      <div className="text-[11px] text-slate-500">
+                        {kind === 'MARKET_BUY' ? '市场采购价' : '常见售价'}
+                      </div>
+                      <div className="tabular text-lg font-semibold text-slate-100">
+                        {quote ? fmtMoney(quote.price, quote.currency) : '—'}
+                      </div>
+                      <div className="text-[10px] text-slate-600">
+                        {quote ? `${quote.source} · ${fmtDate(quote.observed_at)}` : '暂无'}
+                      </div>
+                    </div>
+                  )
+                })}
+              </div>
+            ))}
           </div>
           {market.data?.events.length ? (
             <div className="mt-3 space-y-1">
@@ -264,9 +303,13 @@ export default function ProductDetailPage() {
             <thead>
               <tr className="text-left text-xs text-slate-500">
                 <th className="py-2">订单</th>
+                <th className="py-2">客户</th>
                 <th className="py-2 text-right">数量</th>
+                <th className="py-2 text-right">Reserved</th>
                 <th className="py-2 text-right">已交付</th>
                 <th className="py-2 text-right">剩余</th>
+                <th className="py-2">要求交付</th>
+                <th className="py-2 text-right">成交价</th>
                 <th className="py-2">状态</th>
               </tr>
             </thead>
@@ -284,9 +327,17 @@ export default function ProductDetailPage() {
                       <td className="py-2">
                         <OrderLink id={String(o.id)}>{String(o.order_no)}</OrderLink>
                       </td>
+                      <td className="py-2 text-slate-300">{String(o.customer_name)}</td>
                       <td className="tabular py-2 text-right">{fmtQty(String(line?.ordered_qty ?? 0))}</td>
+                      <td className="tabular py-2 text-right text-amber-300">
+                        {fmtQty(String(line?.reserved_qty ?? 0))}
+                      </td>
                       <td className="tabular py-2 text-right">{fmtQty(String(line?.delivered_qty ?? 0))}</td>
                       <td className="tabular py-2 text-right">{fmtQty(String(line?.remaining_qty ?? 0))}</td>
+                      <td className="py-2 text-slate-400">{fmtDate(String(o.required_at ?? ''))}</td>
+                      <td className="tabular py-2 text-right">
+                        {fmtMoney(String(line?.unit_sell_price ?? ''))}
+                      </td>
                       <td className="py-2">
                         <Badge tone={statusTone(String(o.status))}>{String(o.status)}</Badge>
                       </td>
@@ -324,6 +375,66 @@ export default function ProductDetailPage() {
               ))}
             </tbody>
           </table>
+        </Card>
+      </div>
+
+      <div className="mt-4 grid gap-4 xl:grid-cols-2">
+        <Card title="库存 / 可用趋势">
+          <TrendChart
+            series={[
+              { name: 'On Hand', data: data.trends.on_hand, color: '#38bdf8' },
+              { name: 'Available', data: data.trends.available, color: '#34d399' },
+            ]}
+          />
+        </Card>
+        <Card title="成本与成交价趋势">
+          <TrendChart
+            series={[
+              {
+                name: '加权平均成本',
+                data: data.trends.weighted_avg_cost,
+                color: '#f59e0b',
+              },
+              {
+                name: '最近采购价',
+                data: data.trends.last_purchase_price,
+                color: '#94a3b8',
+              },
+              {
+                name: '实际成交价',
+                data: data.trends.actual_sell_price,
+                color: '#34d399',
+              },
+            ]}
+          />
+        </Card>
+      </div>
+      <div className="mt-4">
+        <Card title="市场价格趋势">
+          <TrendChart
+            series={[
+              {
+                name: '国内采购价',
+                data: data.trends.market_buy_domestic,
+                color: '#60a5fa',
+              },
+              {
+                name: '国内售价',
+                data: data.trends.market_sell_domestic,
+                color: '#f472b6',
+              },
+              {
+                name: '国际采购价',
+                data: data.trends.market_buy_international,
+                color: '#c084fc',
+              },
+              {
+                name: '国际售价',
+                data: data.trends.market_sell_international,
+                color: '#fb923c',
+              },
+            ]}
+          />
         </Card>
       </div>
 

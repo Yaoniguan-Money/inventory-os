@@ -28,8 +28,19 @@ interface WorkbenchItem {
   shortage_7d: string
   last_purchase_price: string | null
   weighted_avg_cost: string | null
+  market_quotes: {
+    DOMESTIC?: { MARKET_BUY?: MarketQuoteLike; MARKET_SELL?: MarketQuoteLike }
+    INTERNATIONAL?: { MARKET_BUY?: MarketQuoteLike; MARKET_SELL?: MarketQuoteLike }
+  }
   suppliers: Array<{ supplier_id: string; name: string }>
   purchase_orders: Array<{ po_id: string; po_no: string; expected_at: string | null; incoming: string }>
+}
+
+interface MarketQuoteLike {
+  price: string
+  currency: string
+  source: string
+  observed_at: string
 }
 
 export default function PurchasingPage() {
@@ -133,6 +144,8 @@ export default function PurchasingPage() {
                 <th className="px-4 py-2.5 text-right">缺口</th>
                 <th className="px-4 py-2.5 text-right">最近采购价</th>
                 <th className="px-4 py-2.5 text-right">平均成本</th>
+                <th className="px-4 py-2.5 text-right">国内采购价</th>
+                <th className="px-4 py-2.5 text-right">国际参考价</th>
                 <th className="px-4 py-2.5">供应商</th>
               </tr>
             </thead>
@@ -157,6 +170,37 @@ export default function PurchasingPage() {
                   </td>
                   <td className="tabular px-4 py-2.5 text-right">{fmtMoney(w.last_purchase_price)}</td>
                   <td className="tabular px-4 py-2.5 text-right">{fmtMoney(w.weighted_avg_cost)}</td>
+                  <td className="px-4 py-2.5 text-right">
+                    {w.market_quotes?.DOMESTIC?.MARKET_BUY ? (
+                      <div className="text-xs">
+                        <div className="tabular text-slate-200">
+                          {fmtMoney(w.market_quotes.DOMESTIC.MARKET_BUY.price, w.market_quotes.DOMESTIC.MARKET_BUY.currency)}
+                        </div>
+                        <div className="text-[10px] text-slate-500">
+                          {w.market_quotes.DOMESTIC.MARKET_BUY.source}
+                        </div>
+                      </div>
+                    ) : (
+                      <span className="text-slate-600">—</span>
+                    )}
+                  </td>
+                  <td className="px-4 py-2.5 text-right">
+                    {w.market_quotes?.INTERNATIONAL?.MARKET_SELL ? (
+                      <div className="text-xs">
+                        <div className="tabular text-slate-200">
+                          {fmtMoney(
+                            w.market_quotes.INTERNATIONAL.MARKET_SELL.price,
+                            w.market_quotes.INTERNATIONAL.MARKET_SELL.currency,
+                          )}
+                        </div>
+                        <div className="text-[10px] text-slate-500">
+                          {w.market_quotes.INTERNATIONAL.MARKET_SELL.source}
+                        </div>
+                      </div>
+                    ) : (
+                      <span className="text-slate-600">—</span>
+                    )}
+                  </td>
                   <td className="px-4 py-2.5 text-xs text-slate-400">
                     {w.suppliers.map((s) => s.name).join('、') || '—'}
                   </td>

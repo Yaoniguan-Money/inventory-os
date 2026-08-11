@@ -30,7 +30,11 @@ export default function MarketPage() {
   const queryClient = useQueryClient()
   const [productId, setProductId] = useState('')
   const [mappingOpen, setMappingOpen] = useState(false)
-  const [mappingForm, setMappingForm] = useState({ external_symbol: '', region: 'DOMESTIC' })
+  const [mappingForm, setMappingForm] = useState({
+    provider: 'open_er_api',
+    external_symbol: '',
+    region: 'INTERNATIONAL',
+  })
   const [error, setError] = useState<unknown>(null)
 
   const products = useQuery({
@@ -54,14 +58,14 @@ export default function MarketPage() {
   const createMapping = useMutation({
     mutationFn: () =>
       api.post(`/products/${productId}/market-mappings`, {
-        provider: 'mock',
+        provider: mappingForm.provider,
         external_symbol: mappingForm.external_symbol,
         region: mappingForm.region,
       }),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['market'] })
       setMappingOpen(false)
-      setMappingForm({ external_symbol: '', region: 'DOMESTIC' })
+      setMappingForm({ provider: 'open_er_api', external_symbol: '', region: 'INTERNATIONAL' })
     },
     onError: setError,
   })
@@ -128,6 +132,19 @@ export default function MarketPage() {
             ) : (
               <EmptyState text="暂无报价，先添加映射并刷新" />
             )}
+            {market.data?.mappings.length ? (
+              <div className="mt-3 flex flex-wrap gap-1.5 border-t border-slate-800 pt-3">
+                {market.data.mappings.map((m) => (
+                  <span
+                    key={m.id}
+                    className="rounded-full border border-slate-700 px-2 py-0.5 text-[11px] text-slate-400"
+                  >
+                    {m.provider} · {m.external_symbol} · {m.region}
+                    {!m.enabled ? '（停用）' : ''}
+                  </span>
+                ))}
+              </div>
+            ) : null}
           </Card>
           <Card title="行情事件">
             {market.data?.events.length ? (
@@ -151,8 +168,18 @@ export default function MarketPage() {
 
       <Modal open={mappingOpen} onClose={() => setMappingOpen(false)} title="添加商品市场映射">
         <div className="space-y-3">
+          <select
+            value={mappingForm.provider}
+            onChange={(e) => setMappingForm({ ...mappingForm, provider: e.target.value })}
+            className="w-full rounded-lg border border-slate-700 bg-slate-800/70 px-3 py-2 text-sm outline-none"
+          >
+            <option value="open_er_api">open_er_api（真实国际汇率参考）</option>
+            <option value="mock">mock（演示数据）</option>
+            <option value="http_json">http_json（需配置 URL）</option>
+            <option value="rss">rss（需配置 Feed）</option>
+          </select>
           <input
-            placeholder="外部符号（如 AL-99.7）"
+            placeholder="外部符号（open_er_api 用货币代码如 USD；mock 用任意符号）"
             value={mappingForm.external_symbol}
             onChange={(e) => setMappingForm({ ...mappingForm, external_symbol: e.target.value })}
             className="w-full rounded-lg border border-slate-700 bg-slate-800/70 px-3 py-2 text-sm outline-none"
@@ -166,7 +193,7 @@ export default function MarketPage() {
             <option value="INTERNATIONAL">国际</option>
           </select>
           <Button className="w-full" disabled={!mappingForm.external_symbol} onClick={() => createMapping.mutate()}>
-            添加（Mock Provider）
+            添加映射
           </Button>
         </div>
       </Modal>

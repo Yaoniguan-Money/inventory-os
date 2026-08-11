@@ -100,8 +100,12 @@ AI 权限边界：所有工具只读；不直接修改库存/订单/价格账；
 
 ## 配置 Market Provider
 
-默认 `MARKET_PROVIDER=mock`（明确标记的 Demo Provider）。
+默认 `MARKET_PROVIDER=open_er_api`：开箱即用接入真实国际汇率参考价（open.er-api.com，无需 Key），
+把映射的外部符号（如 `USD`）换算为 CNY/单位保存为国际市场参考价。
 
+其它 Provider 按映射选择（不同 SKU 可挂不同数据源）：
+
+- `mock`：明确标记的 Demo Provider（国内演示行情）。
 - `http_json`：`MARKET_HTTP_URL=<url>`、`MARKET_HTTP_TOKEN=<token>`，期望 JSON 响应包含 `symbols` 数组。
 - `rss`：`MARKET_RSS_URL=<feed-url>`，条目自动作为 MarketEvent 接入。
 

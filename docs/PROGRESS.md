@@ -70,6 +70,7 @@
 - Supplier / PurchaseOrder / PurchaseOrderLine；DRAFT → CONFIRMED（Incoming）→ PARTIAL/RECEIVED。
 - 采购到货走正式 Receive 事务（批次 + 流水 + 平均成本 + 最近采购价）。
 - `/purchase-workbench`：On Hand / Reserved / Available / Incoming / 7 日需求 / 缺口 / 最近采购价 / 供应商 / PO。
+- 工作台同时返回国内/国际最新市场行情（价格、币种、来源、时间）。
 - 目标售价维护（TARGET_SELL_PRICE 快照）；价格历史接口。
 
 **测试**：`tests/test_purchasing_pricing.py` 7 项通过。
@@ -99,9 +100,10 @@
 
 **已完成**
 
-- MarketDataProvider 抽象 + MockMarketProvider（明确 Demo 标记）+ GenericHttpJsonProvider + GenericRssProvider。
+- MarketDataProvider 抽象 + MockMarketProvider（明确 Demo 标记）+ GenericHttpJsonProvider + GenericRssProvider + OpenErApiFxProvider（真实国际汇率参考，无需 Key）。
 - MarketQuote / MarketEvent / ProductMarketMapping；来源、时间、币种、地区完整保存。
 - `/products/{id}/market`、`/market/refresh`、商品映射接口；PRICE_PRESSURE 规则联动。
+- refresh 按映射选择 Provider（不同 SKU 可挂不同数据源）；默认配置开箱即用真实国际参考源（`MARKET_PROVIDER=open_er_api`）。
 
 **测试**：`tests/test_market.py` 4 项通过。
 
@@ -139,6 +141,7 @@
 - 页面：登录、经营驾驶舱、商品中心、商品详情（旗舰页）、订单中心/详情、仓库中心、采购中心、市场行情、风险中心、设备维护/详情、企业知识库、员工助手、集成与设置。
 - SSE 客户端：收到 `inventory.*`/`orders.*`/`price.*`/`market.*`/`health.*` 等事件后精准 invalidate query，REST 重新拉取权威状态。
 - 商品详情一页含：库存指标、企业价格、外部市场、订单履约、批次、风险告警（可 AI 解释）、时间线。
+- 旗舰页增强：未来 7 日待交付指标；订单表含客户 / Reserved / 要求交付 / 成交价；库存/可用、成本/成交价、国内外市场行情趋势图（ECharts）；市场卡片明确拆分为国内/国际。
 - 前端测试：Vitest 5 项（format、UI primitives）；typecheck / lint / build 通过。
 
 ## Phase 8.5（前端）— Equipment + Knowledge UI
@@ -166,6 +169,16 @@
 - README / DEMO / API 文档补全；`.env.example` 补充 Market/HTTP/RSS 配置。
 - 代码已提交并推送至 GitHub 私有仓库：https://github.com/Yaoniguan-Money/inventory-os
 
+## 安全与边界回归修复（第二轮审计）
+
+- 跨租户脏引用：Product 创建/更新校验 default_warehouse_id / default_location_id 必须属于当前组织；订单确认 `_default_warehouse()` 按 organization_id 重新校验，历史脏数据直接拒绝（404）。攻击型回归测试 4 项。
+- 知识库权限绕过：设备诊断按调用者角色过滤 `access_scope=OWNER` 的文档，普通设备查看者无法获得管理层文档片段。回归测试 1 项。
+- 批次边界 Bug：有批次 + 无批次混存时，出库先消费批次、剩余部分从未批次余额出库，不再错误抛“批次库存不足”（订单履约与备件领用两处一致）。回归测试 1 项。
+- 多批次成本快照：一次发货横跨多个 Lot 时，DeliveryLine.unit_cost_snapshot 按实际发货数量加权平均，不再只记第一批成本。回归测试 1 项。
+- 采购工作台补齐国内/国际市场行情；商品详情补齐 7 日待交付、订单关键列、趋势图与国内/国际行情拆分。
+- Market Provider 按映射选择并默认接入真实国际汇率参考源（open_er_api，无 Key）；前端映射表单可选 Provider。
+- 当前后端测试 59 项全通过（含 8 项新增回归），前端 5 项测试 + E2E 通过。
+
 ## Definition of Done 核对
 
 - [x] private repo 创建：https://github.com/Yaoniguan-Money/inventory-os
@@ -189,7 +202,7 @@
 - [x] 采购中心统一视图（库存/在途/需求/历史采购价/供应商/行情）
 - [x] ForecastProvider / capability / API 存在且 disabled；UI 无伪预测
 - [x] 未实现面向客户客服助手
-- [x] 权限测试、核心库存/订单测试通过（pytest 48 项）
+- [x] 权限测试、核心库存/订单测试通过（pytest 59 项，含跨租户/权限绕过/批次边界/成本快照回归）
 - [x] Playwright 核心链路通过
 - [x] CI 工作流已配置；本地等价检查（ruff/mypy/pytest/build/typecheck/lint/test）全绿，推送后由 GitHub Actions 验证
 - [x] docs/PROGRESS.md 处于最终完成状态

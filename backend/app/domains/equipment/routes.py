@@ -216,6 +216,7 @@ async def diagnose(
     result = await diagnose_equipment(
         db,
         organization_id=user.organization_id,
+        user_role=user.role,
         equipment_id=equipment_id,
         symptom=payload.symptom,
         fault_code=payload.fault_code,

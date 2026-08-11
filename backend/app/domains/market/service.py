@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 import uuid
 from datetime import UTC, datetime
 
@@ -9,6 +10,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.events import record_event
 from app.domains.market.models import MarketEvent, MarketQuote, ProductMarketMapping
 from app.providers.market import get_market_provider
+
+logger = logging.getLogger(__name__)
 
 
 async def refresh_market(db: AsyncSession, *, organization_id: str) -> dict:
@@ -20,11 +23,20 @@ async def refresh_market(db: AsyncSession, *, organization_id: str) -> dict:
             )
         )
     ).scalars().all()
-    provider = get_market_provider()
     quotes_saved = 0
     events_saved = 0
     for mapping in mappings:
-        quotes = await provider.get_latest_quotes(mapping.external_symbol, mapping.region)
+        provider = get_market_provider(mapping.provider)
+        try:
+            quotes = await provider.get_latest_quotes(mapping.external_symbol, mapping.region)
+        except Exception as exc:  # noqa: BLE001 - 外部源失败不应阻断整体刷新
+            logger.warning(
+                "market provider %s failed for %s: %s",
+                mapping.provider,
+                mapping.external_symbol,
+                exc,
+            )
+            quotes = []
         for quote in quotes:
             exists_quote = (
                 await db.execute(
@@ -68,7 +80,16 @@ async def refresh_market(db: AsyncSession, *, organization_id: str) -> dict:
                         "source": quote.source,
                     },
                 )
-        events = await provider.get_market_events(mapping.external_symbol, mapping.region)
+        try:
+            events = await provider.get_market_events(mapping.external_symbol, mapping.region)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning(
+                "market event provider %s failed for %s: %s",
+                mapping.provider,
+                mapping.external_symbol,
+                exc,
+            )
+            events = []
         for event in events:
             exists_event = (
                 await db.execute(

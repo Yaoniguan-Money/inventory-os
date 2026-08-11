@@ -13,6 +13,7 @@ from app.core.audit import record_audit
 from app.core.errors import ConflictError, NotFoundError, ValidationFailureError
 from app.core.events import record_event
 from app.domains.catalog.models import Product
+from app.domains.market.models import MarketQuote
 from app.domains.orders.models import SalesOrder, SalesOrderLine
 from app.domains.purchasing.models import PurchaseOrder, PurchaseOrderLine, Supplier
 from app.domains.warehouse.models import InventoryBalance, Warehouse
@@ -334,6 +335,26 @@ async def workbench(db: AsyncSession, *, organization_id: str) -> list[dict]:
     items: list[dict] = []
     for product in products:
         pid = str(product.id)
+        market_quotes: dict[str, dict] = {"DOMESTIC": {}, "INTERNATIONAL": {}}
+        quotes = (
+            await db.execute(
+                select(MarketQuote)
+                .where(
+                    MarketQuote.organization_id == uuid.UUID(organization_id),
+                    MarketQuote.product_id == product.id,
+                )
+                .order_by(MarketQuote.observed_at.desc())
+            )
+        ).scalars().all()
+        for quote in quotes:
+            region_quotes = market_quotes.setdefault(quote.region, {})
+            if quote.quote_kind not in region_quotes:
+                region_quotes[quote.quote_kind] = {
+                    "price": str(quote.price),
+                    "currency": quote.currency,
+                    "source": quote.source,
+                    "observed_at": quote.observed_at.isoformat(),
+                }
         balance = (
             await db.execute(
                 select(InventoryBalance).where(
@@ -395,6 +416,7 @@ async def workbench(db: AsyncSession, *, organization_id: str) -> list[dict]:
                 "shortage_7d": max(demand - available - incoming, Decimal("0")),
                 "last_purchase_price": last_purchase.price if last_purchase else None,
                 "weighted_avg_cost": avg_cost.price if avg_cost else None,
+                "market_quotes": market_quotes,
                 "suppliers": [
                     {"supplier_id": sid, "name": name} for sid, name in supplier_names.items()
                 ],

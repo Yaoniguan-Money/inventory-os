@@ -393,24 +393,21 @@ async def issue_stock(
         db.add(movement)
         movements.append(movement)
     if to_consume > 0:
-        if not movements:
-            # 无批次库存时直接从余额出库（保持流水完整）。
-            movement = StockMovement(
-                organization_id=uuid.UUID(organization_id),
-                product_id=uuid.UUID(product_id),
-                warehouse_id=uuid.UUID(warehouse_id),
-                movement_type="SHIPMENT",
-                quantity=-to_consume,
-                reference_type=reference_type,
-                reference_id=reference_id,
-                reason=reason,
-                occurred_at=occurred,
-                created_by=uuid.UUID(actor_id) if actor_id else None,
-            )
-            db.add(movement)
-            movements.append(movement)
-        else:
-            raise InsufficientStockError("批次库存不足", details={"shortage": str(to_consume)})
+        # 批次不足时，剩余部分从未批次余额出库（余额已在上方校验足够）。
+        movement = StockMovement(
+            organization_id=uuid.UUID(organization_id),
+            product_id=uuid.UUID(product_id),
+            warehouse_id=uuid.UUID(warehouse_id),
+            movement_type="SHIPMENT",
+            quantity=-to_consume,
+            reference_type=reference_type,
+            reference_id=reference_id,
+            reason=reason,
+            occurred_at=occurred,
+            created_by=uuid.UUID(actor_id) if actor_id else None,
+        )
+        db.add(movement)
+        movements.append(movement)
     balance.on_hand -= quantity
     balance.version += 1
     await db.flush()

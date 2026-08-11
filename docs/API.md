@@ -129,3 +129,14 @@ GET  /api/v1/events
 ```
 
 > 请求/响应 schema 见 FastAPI `/docs`（OpenAPI）。当前实现以真实路由为准。
+
+## Market Providers
+
+```text
+mock           演示行情（明确标记）
+open_er_api    真实国际汇率参考（open.er-api.com，无需 Key）
+http_json      通用 HTTP/JSON（MARKET_HTTP_URL / MARKET_HTTP_TOKEN）
+rss            通用 RSS Feed（MARKET_RSS_URL）
+```
+
+`POST /api/v1/market/refresh` 按 `ProductMarketMapping.provider` 逐个映射调用对应 Provider。

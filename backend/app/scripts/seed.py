@@ -373,6 +373,16 @@ async def seed_business() -> None:
                 region="DOMESTIC",
                 enabled=True,
             )
+        # 开箱即用的真实国际参考源：USD/CNY 汇率
+        await create_mapping(
+            db,
+            organization_id=org_id,
+            product_id=str(products["A001"].id),
+            provider="open_er_api",
+            external_symbol="USD",
+            region="INTERNATIONAL",
+            enabled=True,
+        )
         await refresh_market(db, organization_id=org_id)
 
         # ── 设备与知识 ─────────────────────────────────────

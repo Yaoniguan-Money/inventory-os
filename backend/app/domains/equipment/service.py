@@ -244,6 +244,7 @@ async def diagnose_equipment(
     db: AsyncSession,
     *,
     organization_id: str,
+    user_role: str,
     equipment_id: str,
     symptom: str,
     fault_code: str | None,
@@ -272,6 +273,19 @@ async def diagnose_equipment(
             )
         ).scalars()
     )
+    if user_role not in ("OWNER", "ADMIN"):
+        owner_doc_ids = set(
+            (
+                await db.execute(
+                    select(KnowledgeDocument.id).where(
+                        KnowledgeDocument.organization_id == org_uuid,
+                        KnowledgeDocument.id.in_(list(doc_ids)),
+                        KnowledgeDocument.access_scope == "OWNER",
+                    )
+                )
+            ).scalars()
+        )
+        doc_ids -= owner_doc_ids
     citations: list[dict] = []
     excerpts: list[str] = []
     if doc_ids:

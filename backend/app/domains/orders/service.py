@@ -323,9 +323,17 @@ async def confirm_order(
 
 async def _default_warehouse(db: AsyncSession, organization_id: str, product: Product) -> Warehouse:
     if product.default_warehouse_id:
-        warehouse = await db.get(Warehouse, product.default_warehouse_id)
+        warehouse = (
+            await db.execute(
+                select(Warehouse).where(
+                    Warehouse.id == product.default_warehouse_id,
+                    Warehouse.organization_id == uuid.UUID(organization_id),
+                )
+            )
+        ).scalar_one_or_none()
         if warehouse is not None:
             return warehouse
+        raise NotFoundError("默认仓库不存在或不属于当前组织")
     warehouse = (
         await db.execute(
             select(Warehouse).where(Warehouse.organization_id == uuid.UUID(organization_id))
@@ -550,13 +558,29 @@ async def _consume_lots(
     ).scalars().all()
     to_consume = quantity
     movements: list[StockMovement] = []
-    first_cost: Decimal | None = None
+    weighted_value = Decimal("0")
+    costed_qty = Decimal("0")
+    avg_price: Decimal | None = None
     for lot in lots:
         if to_consume <= 0:
             break
         take = min(lot.quantity_remaining, to_consume)
         lot.quantity_remaining -= take
         to_consume -= take
+        unit = lot.unit_cost
+        if unit is None:
+            if avg_price is None:
+                avg_snapshot = await latest_snapshot(
+                    db,
+                    organization_id=organization_id,
+                    product_id=product_id,
+                    price_type="WEIGHTED_AVG_COST",
+                )
+                avg_price = avg_snapshot.price if avg_snapshot else None
+            unit = avg_price
+        if unit is not None:
+            weighted_value += take * unit
+            costed_qty += take
         movement = StockMovement(
             organization_id=uuid.UUID(organization_id),
             product_id=uuid.UUID(product_id),
@@ -565,7 +589,7 @@ async def _consume_lots(
             lot_id=lot.id,
             movement_type="SHIPMENT",
             quantity=-take,
-            unit_cost=lot.unit_cost,
+            unit_cost=unit,
             reference_type="DELIVERY",
             reference_id=delivery_id,
             occurred_at=datetime.now(UTC),
@@ -573,30 +597,29 @@ async def _consume_lots(
         )
         db.add(movement)
         movements.append(movement)
-        if first_cost is None:
-            first_cost = lot.unit_cost
     if to_consume > 0:
-        if not movements:
-            movement = StockMovement(
-                organization_id=uuid.UUID(organization_id),
-                product_id=uuid.UUID(product_id),
-                warehouse_id=uuid.UUID(warehouse_id),
-                movement_type="SHIPMENT",
-                quantity=-to_consume,
-                reference_type="DELIVERY",
-                reference_id=delivery_id,
-                occurred_at=datetime.now(UTC),
-                created_by=uuid.UUID(actor_id),
-            )
-            db.add(movement)
-            movements.append(movement)
-        else:
-            raise InsufficientStockError(
-                "批次库存不足",
-                details={"shortage": str(to_consume)},
-            )
+        # 批次不足时，剩余部分从未批次余额出库（余额已在调用方校验足够）。
+        movement = StockMovement(
+            organization_id=uuid.UUID(organization_id),
+            product_id=uuid.UUID(product_id),
+            warehouse_id=uuid.UUID(warehouse_id),
+            movement_type="SHIPMENT",
+            quantity=-to_consume,
+            unit_cost=avg_price,
+            reference_type="DELIVERY",
+            reference_id=delivery_id,
+            occurred_at=datetime.now(UTC),
+            created_by=uuid.UUID(actor_id),
+        )
+        db.add(movement)
+        movements.append(movement)
+        if avg_price is not None:
+            weighted_value += to_consume * avg_price
+            costed_qty += to_consume
     await db.flush()
-    return movements, first_cost
+    if costed_qty == quantity and costed_qty > 0:
+        return movements, (weighted_value / quantity).quantize(Decimal("0.0001"))
+    return movements, None
 
 
 async def cancel_order(

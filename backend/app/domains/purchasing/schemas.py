@@ -85,5 +85,6 @@ class WorkbenchItem(BaseModel):
     shortage_7d: Decimal
     last_purchase_price: Decimal | None
     weighted_avg_cost: Decimal | None
+    market_quotes: dict[str, dict] = Field(default_factory=dict)
     suppliers: list[dict]
     purchase_orders: list[dict]
