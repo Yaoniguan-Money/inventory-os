@@ -302,3 +302,60 @@ async def test_multi_lot_shipment_uses_weighted_cost_snapshot(
             await db.execute(select(OrdersDeliveryLine).limit(1))
         ).scalar_one()
         assert delivery_line.unit_cost_snapshot == Decimal("90.0000")
+
+
+async def test_maintenance_issue_consumes_unlocated_balance_after_lots(
+    client: httpx.AsyncClient, org_owner_headers: dict[str, str]
+) -> None:
+    """维修领用（issue_stock）同样支持批次 + 无批次混存出库。"""
+
+    wh = await client.post(
+        "/api/v1/warehouses", headers=org_owner_headers, json={"code": "WH01", "name": "一号仓库"}
+    )
+    warehouse_id = wh.json()["id"]
+    product = await client.post(
+        "/api/v1/products",
+        headers=org_owner_headers,
+        json={"sku": "MIX-02", "name": "混合备件", "default_warehouse_id": warehouse_id},
+    )
+    product_id = product.json()["id"]
+    await client.post(
+        "/api/v1/inventory/receive",
+        headers=org_owner_headers,
+        json={
+            "product_id": product_id,
+            "warehouse_id": warehouse_id,
+            "quantity": "50",
+            "unit_cost": "30.00",
+            "lot_code": "LOT-MIX-2",
+        },
+    )
+    await client.post(
+        "/api/v1/inventory/receive",
+        headers=org_owner_headers,
+        json={"product_id": product_id, "warehouse_id": warehouse_id, "quantity": "50"},
+    )
+    equipment = await client.post(
+        "/api/v1/equipment",
+        headers=org_owner_headers,
+        json={"asset_code": "E-MIX", "name": "混合设备"},
+    )
+    equipment_id = equipment.json()["id"]
+    maintenance = await client.post(
+        f"/api/v1/equipment/{equipment_id}/maintenance",
+        headers=org_owner_headers,
+        json={
+            "maintenance_type": "REPLACE_PART",
+            "result": "COMPLETED",
+            "parts": [{"product_id": product_id, "quantity": "80"}],
+        },
+    )
+    assert maintenance.status_code == 201, maintenance.text
+    inv = await client.get(f"/api/v1/inventory/{product_id}", headers=org_owner_headers)
+    assert Decimal(inv.json()["on_hand"]) == Decimal("20")
+    movements = await client.get(
+        f"/api/v1/inventory/{product_id}/movements", headers=org_owner_headers
+    )
+    shipments = [m for m in movements.json() if m["movement_type"] == "SHIPMENT"]
+    assert len(shipments) == 2
+    assert sum(1 for m in shipments if m["lot_id"] is None) == 1
