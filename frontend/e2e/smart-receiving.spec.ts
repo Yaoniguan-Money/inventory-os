@@ -8,7 +8,7 @@ test('智能出入库：扫码识别商品 → 确认入库 → 库存增加', a
   await expect(page.getByText('经营驾驶舱')).toBeVisible()
 
   await page.getByRole('link', { name: '仓库中心' }).click()
-  const productRow = page.locator('tr', { hasText: 'A004 · 伺服电机 750W' })
+  const productRow = page.locator('tr', { hasText: 'A004 · 伺服电机 750W' }).first()
   await expect(productRow.getByRole('cell').nth(2)).toHaveText('800')
 
   // 打开入库窗口，使用扫码识别而非下拉选择。

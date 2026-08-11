@@ -51,6 +51,15 @@ class Location(UUIDPrimaryKeyMixin, Base):
 
 class InventoryLot(UUIDPrimaryKeyMixin, OrgScopedMixin, TimestampMixin, Base):
     __tablename__ = "inventory_lots"
+    __table_args__ = (
+        UniqueConstraint(
+            "organization_id",
+            "product_id",
+            "warehouse_id",
+            "lot_code",
+            name="uq_inventory_lots_org_product_wh_lot",
+        ),
+    )
 
     product_id: Mapped[uuid.UUID] = mapped_column(
         Uuid(as_uuid=True), ForeignKey("products.id", ondelete="RESTRICT"), index=True

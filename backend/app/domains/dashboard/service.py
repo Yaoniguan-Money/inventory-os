@@ -59,6 +59,22 @@ async def _incoming_before(
     return sum((line.ordered_qty - line.received_qty for line in lines), Decimal("0"))
 
 
+async def _incoming_total(
+    db: AsyncSession, organization_id: str, product_id: str
+) -> Decimal:
+    stmt = (
+        select(PurchaseOrderLine)
+        .join(PurchaseOrder, PurchaseOrder.id == PurchaseOrderLine.purchase_order_id)
+        .where(
+            PurchaseOrder.organization_id == uuid.UUID(organization_id),
+            PurchaseOrderLine.product_id == uuid.UUID(product_id),
+            PurchaseOrder.status.in_(["CONFIRMED", "PARTIAL"]),
+        )
+    )
+    lines = (await db.execute(stmt)).scalars().all()
+    return sum((line.ordered_qty - line.received_qty for line in lines), Decimal("0"))
+
+
 async def dashboard(db: AsyncSession, *, organization_id: str) -> dict:
     org_uuid = uuid.UUID(organization_id)
     now = datetime.now(UTC)
@@ -134,8 +150,9 @@ async def dashboard(db: AsyncSession, *, organization_id: str) -> dict:
         if effective_due is not None and effective_due <= horizon
     )
 
-    # ATP：同一商品的 incoming 按截止时间顺序分配，防止被多个订单重复“借用”。
+    # ATP：incoming 池使用全量在途（不再只装 7 日），预留覆盖以可售库存为上限。
     incoming_pools: dict[str, Decimal] = {}
+    sellable_pools: dict[str, Decimal] = {}
     risky_order_ids: set[str] = set()
     sorted_due_lines = sorted(
         due_lines,
@@ -147,8 +164,14 @@ async def dashboard(db: AsyncSession, *, organization_id: str) -> dict:
     for line, order in sorted_due_lines:
         product_id = str(line.product_id)
         if product_id not in incoming_pools:
-            incoming_pools[product_id] = await _incoming_before(
-                db, organization_id, product_id, horizon
+            incoming_pools[product_id] = await _incoming_total(db, organization_id, product_id)
+            balances = by_product.get(product_id, [])
+            expired = await expired_lot_quantity(
+                db, organization_id=organization_id, product_id=product_id
+            )
+            sellable_pools[product_id] = max(
+                sum((b.on_hand for b in balances), Decimal("0")) - expired,
+                Decimal("0"),
             )
         deadline = line.required_at or order.required_at
         incoming_before_deadline = await _incoming_before(
@@ -156,8 +179,10 @@ async def dashboard(db: AsyncSession, *, organization_id: str) -> dict:
         )
         allocated = min(incoming_before_deadline, incoming_pools[product_id])
         incoming_pools[product_id] -= allocated
+        covered = min(line.reserved_qty, sellable_pools[product_id])
+        sellable_pools[product_id] -= covered
         remaining = line.ordered_qty - line.delivered_qty
-        if remaining > line.reserved_qty + allocated:
+        if remaining > covered + allocated:
             risky_order_ids.add(str(order.id))
     at_risk_orders = len(risky_order_ids)
 
@@ -206,13 +231,29 @@ async def dashboard(db: AsyncSession, *, organization_id: str) -> dict:
         due_demand = sum(
             (line.ordered_qty - line.delivered_qty for line, _ in demand_rows), Decimal("0")
         )
-        reserved_for_due = sum(
-            (
-                min(line.ordered_qty - line.delivered_qty, line.reserved_qty)
-                for line, _ in demand_rows
+        demand_sorted = sorted(
+            demand_rows,
+            key=lambda pair: (
+                (pair[0].required_at or pair[1].required_at) is None,
+                pair[0].required_at or pair[1].required_at or datetime.max.replace(tzinfo=UTC),
             ),
+        )
+        sellable_pool = max(
+            sum((b.on_hand for b in product_balances), Decimal("0")) - expired_qty,
             Decimal("0"),
         )
+        reserved_for_due = Decimal("0")
+        incoming_pool = await _incoming_total(db, organization_id, str(product.id))
+        for line, order in demand_sorted:
+            covered = min(line.reserved_qty, sellable_pool)
+            sellable_pool -= covered
+            reserved_for_due += covered
+            deadline = line.required_at or order.required_at
+            incoming_before_deadline = await _incoming_before(
+                db, organization_id, str(product.id), deadline
+            )
+            allocated = min(incoming_before_deadline, incoming_pool)
+            incoming_pool -= allocated
         unreserved_due = max(due_demand - reserved_for_due, Decimal("0"))
         incoming = await _incoming_before(db, organization_id, str(product.id), horizon)
         shortage = unreserved_due - available - incoming
@@ -266,7 +307,13 @@ async def dashboard(db: AsyncSession, *, organization_id: str) -> dict:
                     .limit(1)
                 )
             ).scalar_one_or_none()
-            if avg_cost and quote and avg_cost > 0:
+            if (
+                avg_cost
+                and quote
+                and avg_cost > 0
+                and (quote.basis is None or quote.basis != "FX")
+                and (quote.unit is None or quote.unit == product.unit)
+            ):
                 ratio = (avg_cost - quote.price) / avg_cost
                 if ratio > Decimal("0.1"):
                     market_anomalies.append(

@@ -72,6 +72,7 @@ class InventoryBalanceOut(BaseModel):
     reserved: Decimal
     available: Decimal
     version: int
+    row_type: str = "WAREHOUSE"
     default_location_code: str | None = None
     incoming: Decimal = Decimal("0")
     expired_qty: Decimal = Decimal("0")

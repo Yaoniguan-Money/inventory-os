@@ -8,6 +8,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.events import record_event
+from app.domains.catalog.models import Product
 from app.domains.market.models import MarketEvent, MarketQuote, ProductMarketMapping
 from app.providers.market import get_market_provider
 
@@ -181,7 +182,18 @@ async def create_mapping(
     region: str,
     enabled: bool,
 ) -> ProductMarketMapping:
-    from app.core.errors import ConflictError
+    from app.core.errors import ConflictError, NotFoundError
+
+    product = (
+        await db.execute(
+            select(Product).where(
+                Product.id == uuid.UUID(product_id),
+                Product.organization_id == uuid.UUID(organization_id),
+            )
+        )
+    ).scalar_one_or_none()
+    if product is None:
+        raise NotFoundError("商品不存在或不属于当前组织")
 
     existing = (
         await db.execute(

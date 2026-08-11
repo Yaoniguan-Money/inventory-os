@@ -5,6 +5,7 @@ from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 
 from sqlalchemy import func, select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import settings
@@ -45,6 +46,22 @@ async def _incoming_before(
     return sum((line.ordered_qty - line.received_qty for line in lines), Decimal("0"))
 
 
+async def _incoming_total(
+    db: AsyncSession, organization_id: str, product_id: str
+) -> Decimal:
+    stmt = (
+        select(PurchaseOrderLine)
+        .join(PurchaseOrder, PurchaseOrder.id == PurchaseOrderLine.purchase_order_id)
+        .where(
+            PurchaseOrder.organization_id == uuid.UUID(organization_id),
+            PurchaseOrderLine.product_id == uuid.UUID(product_id),
+            PurchaseOrder.status.in_(["CONFIRMED", "PARTIAL"]),
+        )
+    )
+    lines = (await db.execute(stmt)).scalars().all()
+    return sum((line.ordered_qty - line.received_qty for line in lines), Decimal("0"))
+
+
 async def _upsert_alert(
     db: AsyncSession,
     *,
@@ -77,8 +94,21 @@ async def _upsert_alert(
             evidence_json=evidence,
             opened_at=now,
         )
-        db.add(alert)
-        await db.flush()
+        try:
+            async with db.begin_nested():
+                db.add(alert)
+                await db.flush()
+        except IntegrityError:
+            alert = (
+                await db.execute(
+                    select(InventoryAlert).where(
+                        InventoryAlert.organization_id == uuid.UUID(organization_id),
+                        InventoryAlert.product_id == uuid.UUID(product_id),
+                        InventoryAlert.alert_type == alert_type,
+                        InventoryAlert.status == "OPEN",
+                    )
+                )
+            ).scalar_one()
         record_event(
             db,
             organization_id=organization_id,
@@ -182,13 +212,42 @@ async def recalculate_product(
     due_demand = sum(
         (line.ordered_qty - line.delivered_qty for line, _ in demand_rows), Decimal("0")
     )
-    reserved_for_due = sum(
-        (
-            min(line.ordered_qty - line.delivered_qty, line.reserved_qty)
-            for line, _ in demand_rows
+    demand_sorted = sorted(
+        demand_rows,
+        key=lambda pair: (
+            (pair[0].required_at or pair[1].required_at) is None,
+            pair[0].required_at or pair[1].required_at or datetime.max.replace(tzinfo=UTC),
         ),
-        Decimal("0"),
     )
+    # 预留覆盖只能以“可售（未过期）”库存为上限：预留背后实物过期后不能继续算被覆盖。
+    sellable_pool = max(on_hand - expired_qty, Decimal("0"))
+    reserved_covered_total = Decimal("0")
+    order_risks: list[dict] = []
+    incoming_pool = await _incoming_total(db, organization_id, pid)
+    for line, order in demand_sorted:
+        remaining = line.ordered_qty - line.delivered_qty
+        covered = min(line.reserved_qty, sellable_pool)
+        sellable_pool -= covered
+        reserved_covered_total += covered
+        deadline = line.required_at or order.required_at
+        incoming_for_line = await _incoming_before(
+            db, organization_id, str(line.product_id), deadline
+        )
+        allocated_incoming = min(incoming_for_line, incoming_pool)
+        incoming_pool -= allocated_incoming
+        if remaining > 0 and remaining > covered + allocated_incoming:
+            order_risks.append(
+                {
+                    "order_id": str(order.id),
+                    "order_no": order.order_no,
+                    "required_at": order.required_at.isoformat() if order.required_at else None,
+                    "remaining": str(remaining),
+                    "reserved": str(covered),
+                    "incoming_before_deadline": str(incoming_for_line),
+                    "allocated_incoming": str(allocated_incoming),
+                }
+            )
+    reserved_for_due = reserved_covered_total
     unreserved_due = max(due_demand - reserved_for_due, Decimal("0"))
     incoming_rows = (
         await db.execute(
@@ -339,36 +398,7 @@ async def recalculate_product(
     else:
         await _resolve_alert(db, organization_id=organization_id, product_id=pid, alert_type="EXPIRY_RISK")
 
-    # 5) ORDER_FULFILLMENT_RISK: 剩余量 > 该行已预留量 + 期限前可到货在途
-    order_risks: list[dict] = []
-    demand_sorted = sorted(
-        demand_rows,
-        key=lambda pair: (
-            (pair[0].required_at or pair[1].required_at) is None,
-            pair[0].required_at or pair[1].required_at or datetime.max.replace(tzinfo=UTC),
-        ),
-    )
-    incoming_pool = incoming_before_due
-    for line, order in demand_sorted:
-        remaining = line.ordered_qty - line.delivered_qty
-        deadline = line.required_at or order.required_at
-        incoming_for_line = await _incoming_before(
-            db, organization_id, str(line.product_id), deadline
-        )
-        allocated_incoming = min(incoming_for_line, incoming_pool)
-        incoming_pool -= allocated_incoming
-        if remaining > 0 and remaining > line.reserved_qty + allocated_incoming:
-            order_risks.append(
-                {
-                    "order_id": str(order.id),
-                    "order_no": order.order_no,
-                    "required_at": order.required_at.isoformat() if order.required_at else None,
-                    "remaining": str(remaining),
-                    "reserved": str(line.reserved_qty),
-                    "incoming_before_deadline": str(incoming_for_line),
-                    "allocated_incoming": str(allocated_incoming),
-                }
-            )
+    # 5) ORDER_FULFILLMENT_RISK（风险列表已在上方与 reserved 覆盖统一计算）
     if order_risks:
         await _upsert_alert(
             db,

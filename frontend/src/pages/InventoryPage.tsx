@@ -20,6 +20,7 @@ interface Balance {
   sku: string
   name: string
   warehouse_code: string
+  row_type: string
   on_hand: string
   reserved: string
   available: string
@@ -132,7 +133,13 @@ export default function InventoryPage() {
                       {b.sku} · {b.name}
                     </ProductLink>
                   </td>
-                  <td className="px-4 py-2.5 text-slate-400">{b.warehouse_code}</td>
+                  <td className="px-4 py-2.5 text-slate-400">
+                    {b.row_type === 'SKU' ? (
+                      <Badge tone="sky">全部仓库</Badge>
+                    ) : (
+                      b.warehouse_code
+                    )}
+                  </td>
                   <td className="tabular px-4 py-2.5 text-right text-slate-200">{fmtQty(b.on_hand)}</td>
                   <td className="tabular px-4 py-2.5 text-right text-amber-300">{fmtQty(b.reserved)}</td>
                   <td className="tabular px-4 py-2.5 text-right text-sky-300">{fmtQty(b.available)}</td>

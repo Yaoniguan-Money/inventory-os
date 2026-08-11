@@ -518,10 +518,15 @@ async def test_inventory_product_level_fields_and_projected(
     await _receive(client, org_owner_headers, ids["product_id"], ids["wh2"], "50")
     listing = await client.get("/api/v1/inventory", headers=org_owner_headers)
     rows = [r for r in listing.json() if r["product_id"] == ids["product_id"]]
-    assert len(rows) == 2
-    assert rows[0]["health_status"] == rows[1]["health_status"]
-    assert rows[0]["incoming"] == rows[1]["incoming"]
-    assert "expired_qty" in rows[0] and "projected" in rows[0]
+    assert len(rows) == 3  # 1 汇总行 + 2 仓库行
+    summary = next(r for r in rows if r["row_type"] == "SKU")
+    warehouse_rows = [r for r in rows if r["row_type"] == "WAREHOUSE"]
+    assert Decimal(summary["incoming"]) == Decimal("0")
+    assert "expired_qty" in summary and "projected" in summary
+    assert Decimal(summary["projected"]) == Decimal("150")
+    # 仓库行只含本仓字段，不再重复叠加全局 Incoming。
+    assert all(Decimal(r["incoming"]) == Decimal("0") for r in warehouse_rows)
+    assert {Decimal(r["projected"]) for r in warehouse_rows} == {Decimal("100"), Decimal("50")}
     single = await client.get(
         f"/api/v1/inventory/{ids['product_id']}", headers=org_owner_headers
     )

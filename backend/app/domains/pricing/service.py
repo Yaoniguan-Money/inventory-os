@@ -52,7 +52,7 @@ async def get_prices(db: AsyncSession, *, organization_id: str, product_id: str)
         raise NotFoundError("商品不存在")
 
     async def latest(price_type: str) -> InternalPriceSnapshot | None:
-        return (
+        snapshot = (
             await db.execute(
                 select(InternalPriceSnapshot)
                 .where(
@@ -67,6 +67,13 @@ async def get_prices(db: AsyncSession, *, organization_id: str, product_id: str)
                 .limit(1)
             )
         ).scalar_one_or_none()
+        if (
+            snapshot is not None
+            and price_type == "TARGET_SELL_PRICE"
+            and snapshot.source_reference_type == "CLEARED"
+        ):
+            return None
+        return snapshot
 
     history = (
         await db.execute(

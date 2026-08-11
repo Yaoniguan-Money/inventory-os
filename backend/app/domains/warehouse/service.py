@@ -5,6 +5,7 @@ from datetime import UTC, datetime
 from decimal import Decimal
 
 from sqlalchemy import select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.audit import record_audit
@@ -155,16 +156,30 @@ async def get_balance_locked(
         )
     ).scalar_one_or_none()
     if balance is None:
-        balance = InventoryBalance(
-            organization_id=uuid.UUID(organization_id),
-            product_id=uuid.UUID(product_id),
-            warehouse_id=uuid.UUID(warehouse_id),
-            on_hand=Decimal("0"),
-            reserved=Decimal("0"),
-            version=0,
-        )
-        db.add(balance)
-        await db.flush()
+        try:
+            async with db.begin_nested():
+                balance = InventoryBalance(
+                    organization_id=uuid.UUID(organization_id),
+                    product_id=uuid.UUID(product_id),
+                    warehouse_id=uuid.UUID(warehouse_id),
+                    on_hand=Decimal("0"),
+                    reserved=Decimal("0"),
+                    version=0,
+                )
+                db.add(balance)
+                await db.flush()
+        except IntegrityError:
+            balance = (
+                await db.execute(
+                    select(InventoryBalance)
+                    .where(
+                        InventoryBalance.organization_id == uuid.UUID(organization_id),
+                        InventoryBalance.product_id == uuid.UUID(product_id),
+                        InventoryBalance.warehouse_id == uuid.UUID(warehouse_id),
+                    )
+                    .with_for_update()
+                )
+            ).scalar_one()
     return balance
 
 
@@ -257,26 +272,43 @@ async def receive_stock(
                     InventoryLot.warehouse_id == uuid.UUID(warehouse_id),
                     InventoryLot.lot_code == lot_code,
                 )
+                .with_for_update()
             )
         ).scalar_one_or_none()
         if lot is None:
-            lot = InventoryLot(
-                organization_id=uuid.UUID(organization_id),
-                product_id=uuid.UUID(product_id),
-                warehouse_id=uuid.UUID(warehouse_id),
-                location_id=uuid.UUID(location_id) if location_id else None,
-                lot_code=lot_code,
-                quantity_remaining=Decimal("0"),
-                unit_cost=unit_cost,
-                received_at=occurred,
-                expires_at=expires_at,
-                supplier_id=uuid.UUID(supplier_id) if supplier_id else None,
-                purchase_order_line_id=(
-                    uuid.UUID(purchase_order_line_id) if purchase_order_line_id else None
-                ),
-            )
-            db.add(lot)
-            await db.flush()
+            try:
+                async with db.begin_nested():
+                    lot = InventoryLot(
+                        organization_id=uuid.UUID(organization_id),
+                        product_id=uuid.UUID(product_id),
+                        warehouse_id=uuid.UUID(warehouse_id),
+                        location_id=uuid.UUID(location_id) if location_id else None,
+                        lot_code=lot_code,
+                        quantity_remaining=Decimal("0"),
+                        unit_cost=unit_cost,
+                        received_at=occurred,
+                        expires_at=expires_at,
+                        supplier_id=uuid.UUID(supplier_id) if supplier_id else None,
+                        purchase_order_line_id=(
+                            uuid.UUID(purchase_order_line_id)
+                            if purchase_order_line_id
+                            else None
+                        ),
+                    )
+                    db.add(lot)
+                    await db.flush()
+            except IntegrityError:
+                lot = (
+                    await db.execute(
+                        select(InventoryLot).where(
+                            InventoryLot.organization_id == uuid.UUID(organization_id),
+                            InventoryLot.product_id == uuid.UUID(product_id),
+                            InventoryLot.warehouse_id == uuid.UUID(warehouse_id),
+                            InventoryLot.lot_code == lot_code,
+                        )
+                        .with_for_update()
+                    )
+                ).scalar_one()
         lot.quantity_remaining += quantity
         if unit_cost is not None:
             lot.unit_cost = unit_cost
@@ -408,18 +440,91 @@ async def adjust_stock(
     before = {"on_hand": str(balance.on_hand), "version": balance.version}
     balance.on_hand = new_on_hand
     balance.version += 1
-    movement = StockMovement(
-        organization_id=uuid.UUID(organization_id),
-        product_id=uuid.UUID(product_id),
-        warehouse_id=uuid.UUID(warehouse_id),
-        movement_type="ADJUST_IN" if quantity > 0 else "ADJUST_OUT",
-        quantity=quantity,
-        reference_type="MANUAL",
-        reason=reason,
-        occurred_at=occurred,
-        created_by=uuid.UUID(actor_id) if actor_id else None,
-    )
-    db.add(movement)
+    movements: list[StockMovement] = []
+    if quantity > 0:
+        avg_snapshot = await latest_snapshot(
+            db,
+            organization_id=organization_id,
+            product_id=product_id,
+            price_type="WEIGHTED_AVG_COST",
+        )
+        lot = InventoryLot(
+            organization_id=uuid.UUID(organization_id),
+            product_id=uuid.UUID(product_id),
+            warehouse_id=uuid.UUID(warehouse_id),
+            lot_code=f"ADJ-{uuid.uuid4().hex[:8]}",
+            quantity_remaining=quantity,
+            unit_cost=avg_snapshot.price if avg_snapshot else None,
+            received_at=occurred,
+        )
+        db.add(lot)
+        await db.flush()
+        movements.append(
+            StockMovement(
+                organization_id=uuid.UUID(organization_id),
+                product_id=uuid.UUID(product_id),
+                warehouse_id=uuid.UUID(warehouse_id),
+                lot_id=lot.id,
+                movement_type="ADJUST_IN",
+                quantity=quantity,
+                unit_cost=lot.unit_cost,
+                reference_type="MANUAL",
+                reason=reason,
+                occurred_at=occurred,
+                created_by=uuid.UUID(actor_id) if actor_id else None,
+            )
+        )
+    else:
+        lots = (
+            await db.execute(
+                select(InventoryLot)
+                .where(
+                    InventoryLot.organization_id == uuid.UUID(organization_id),
+                    InventoryLot.product_id == uuid.UUID(product_id),
+                    InventoryLot.warehouse_id == uuid.UUID(warehouse_id),
+                    InventoryLot.quantity_remaining > 0,
+                )
+                .order_by(InventoryLot.received_at)
+                .with_for_update()
+            )
+        ).scalars().all()
+        remaining = -quantity
+        for lot in lots:
+            if remaining <= 0:
+                break
+            take = min(lot.quantity_remaining, remaining)
+            lot.quantity_remaining -= take
+            remaining -= take
+            movements.append(
+                StockMovement(
+                    organization_id=uuid.UUID(organization_id),
+                    product_id=uuid.UUID(product_id),
+                    warehouse_id=uuid.UUID(warehouse_id),
+                    lot_id=lot.id,
+                    movement_type="ADJUST_OUT",
+                    quantity=-take,
+                    unit_cost=lot.unit_cost,
+                    reference_type="MANUAL",
+                    reason=reason,
+                    occurred_at=occurred,
+                    created_by=uuid.UUID(actor_id) if actor_id else None,
+                )
+            )
+        if remaining > 0:
+            movements.append(
+                StockMovement(
+                    organization_id=uuid.UUID(organization_id),
+                    product_id=uuid.UUID(product_id),
+                    warehouse_id=uuid.UUID(warehouse_id),
+                    movement_type="ADJUST_OUT",
+                    quantity=-remaining,
+                    reference_type="MANUAL",
+                    reason=reason,
+                    occurred_at=occurred,
+                    created_by=uuid.UUID(actor_id) if actor_id else None,
+                )
+            )
+    db.add_all(movements)
     await db.flush()
     record_event(
         db,
@@ -447,7 +552,7 @@ async def adjust_stock(
         before_json=before,
         after_json={"on_hand": str(balance.on_hand), "version": balance.version},
     )
-    return balance, movement
+    return balance, movements[0]
 
 
 async def issue_stock(

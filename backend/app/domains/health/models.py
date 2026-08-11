@@ -4,7 +4,7 @@ import uuid
 from datetime import datetime
 from typing import Any
 
-from sqlalchemy import JSON, DateTime, ForeignKey, String, Uuid
+from sqlalchemy import JSON, DateTime, ForeignKey, Index, String, Uuid, text
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.core.database import Base
@@ -13,6 +13,16 @@ from app.core.mixins import OrgScopedMixin, TimestampMixin, UUIDPrimaryKeyMixin
 
 class InventoryAlert(UUIDPrimaryKeyMixin, OrgScopedMixin, TimestampMixin, Base):
     __tablename__ = "inventory_alerts"
+    __table_args__ = (
+        Index(
+            "uq_inventory_alerts_open_product_type",
+            "organization_id",
+            "product_id",
+            "alert_type",
+            unique=True,
+            postgresql_where=text("status = 'OPEN'"),
+        ),
+    )
 
     product_id: Mapped[uuid.UUID] = mapped_column(
         Uuid(as_uuid=True), ForeignKey("products.id", ondelete="CASCADE"), index=True

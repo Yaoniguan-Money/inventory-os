@@ -39,6 +39,12 @@ async def process_integration_event(
         return "duplicate"
 
     occurred = occurred_at or datetime.now(UTC)
+    expires_at = None
+    if data.get("expires_at"):
+        try:
+            expires_at = datetime.fromisoformat(str(data["expires_at"]).replace("Z", "+00:00"))
+        except ValueError as exc:
+            raise ValueError("data.expires_at 格式无效（需要 ISO 时间）") from exc
     if event_type == "inventory.received":
         product = await _require_product(db, organization_id, data.get("sku"))
         warehouse = await _require_warehouse(db, organization_id, data.get("warehouse"))
@@ -58,7 +64,7 @@ async def process_integration_event(
             quantity=quantity,
             unit_cost=unit_price,
             lot_code=data.get("lot_code"),
-            expires_at=None,
+            expires_at=expires_at,
             supplier_id=None,
             purchase_order_line_id=None,
             reason=f"外部事件 {source}:{event_id}",
@@ -134,4 +140,3 @@ async def _require_warehouse(db: AsyncSession, organization_id: str, code) -> Wa
     if warehouse is None:
         raise ValueError(f"仓库编码不存在: {code}")
     return warehouse
-

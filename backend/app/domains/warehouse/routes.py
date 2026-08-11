@@ -128,70 +128,6 @@ def _balance_out(
     return InventoryBalanceOut(**payload)
 
 
-async def _inventory_extras(
-    db: AsyncSession, *, organization_id: str, product: Product
-) -> dict:
-    incoming = await incoming_for_product(
-        db, organization_id=organization_id, product_id=str(product.id)
-    )
-    default_location_code: str | None = None
-    if product.default_location_id:
-        location = await db.get(Location, product.default_location_id)
-        default_location_code = location.code if location else None
-    alerts = (
-        await db.execute(
-            select(InventoryAlert).where(
-                InventoryAlert.organization_id == uuid.UUID(organization_id),
-                InventoryAlert.product_id == product.id,
-                InventoryAlert.status == "OPEN",
-            )
-        )
-    ).scalars().all()
-    if alerts:
-        health_status = (
-            "HIGH"
-            if any(a.severity in ("CRITICAL", "HIGH") for a in alerts)
-            else "WARN"
-        )
-    else:
-        health_status = "NORMAL"
-    last_receipt = (
-        await db.execute(
-            select(StockMovement)
-            .where(
-                StockMovement.organization_id == uuid.UUID(organization_id),
-                StockMovement.product_id == product.id,
-                StockMovement.movement_type == "RECEIPT",
-            )
-            .order_by(StockMovement.occurred_at.desc())
-            .limit(1)
-        )
-    ).scalar_one_or_none()
-    last_shipment = (
-        await db.execute(
-            select(StockMovement)
-            .where(
-                StockMovement.organization_id == uuid.UUID(organization_id),
-                StockMovement.product_id == product.id,
-                StockMovement.movement_type == "SHIPMENT",
-            )
-            .order_by(StockMovement.occurred_at.desc())
-            .limit(1)
-        )
-    ).scalar_one_or_none()
-    expired_qty = await expired_lot_quantity(
-        db, organization_id=organization_id, product_id=str(product.id)
-    )
-    return {
-        "default_location_code": default_location_code,
-        "incoming": incoming,
-        "expired_qty": expired_qty,
-        "health_status": health_status,
-        "last_receipt_at": last_receipt.occurred_at if last_receipt else None,
-        "last_shipment_at": last_shipment.occurred_at if last_shipment else None,
-    }
-
-
 @router.get("/inventory", response_model=list[InventoryBalanceOut])
 async def list_inventory(
     db: AsyncSession = Depends(get_db),
@@ -207,14 +143,142 @@ async def list_inventory(
         )
     ).all()
     outputs: list[InventoryBalanceOut] = []
-    product_extras: dict[str, dict] = {}
+    grouped: dict[str, list[tuple[InventoryBalance, Product, Warehouse]]] = {}
     for balance, product, warehouse in rows:
-        if str(product.id) not in product_extras:
-            product_extras[str(product.id)] = await _inventory_extras(
-                db, organization_id=user.organization_id, product=product
+        grouped.setdefault(str(product.id), []).append((balance, product, warehouse))
+    for product_key, product_rows in grouped.items():
+        product = product_rows[0][1]
+        on_hand = sum((b.on_hand for b, _, _ in product_rows), Decimal("0"))
+        reserved = sum((b.reserved for b, _, _ in product_rows), Decimal("0"))
+        incoming = await incoming_for_product(
+            db, organization_id=user.organization_id, product_id=product_key
+        )
+        expired_total = await expired_lot_quantity(
+            db, organization_id=user.organization_id, product_id=product_key
+        )
+        available_total = max(on_hand - reserved - expired_total, Decimal("0"))
+        alerts = (
+            await db.execute(
+                select(InventoryAlert).where(
+                    InventoryAlert.organization_id == uuid.UUID(user.organization_id),
+                    InventoryAlert.product_id == product.id,
+                    InventoryAlert.status == "OPEN",
+                )
             )
-        extras = product_extras[str(product.id)]
-        outputs.append(_balance_out(balance, product, warehouse, extras))
+        ).scalars().all()
+        health_status = (
+            "HIGH"
+            if any(a.severity in ("CRITICAL", "HIGH") for a in alerts)
+            else "WARN"
+            if alerts
+            else "NORMAL"
+        )
+        default_location_code: str | None = None
+        if product.default_location_id:
+            location = await db.get(Location, product.default_location_id)
+            default_location_code = location.code if location else None
+        last_receipt = (
+            await db.execute(
+                select(StockMovement)
+                .where(
+                    StockMovement.organization_id == uuid.UUID(user.organization_id),
+                    StockMovement.product_id == product.id,
+                    StockMovement.movement_type == "RECEIPT",
+                )
+                .order_by(StockMovement.occurred_at.desc())
+                .limit(1)
+            )
+        ).scalar_one_or_none()
+        last_shipment = (
+            await db.execute(
+                select(StockMovement)
+                .where(
+                    StockMovement.organization_id == uuid.UUID(user.organization_id),
+                    StockMovement.product_id == product.id,
+                    StockMovement.movement_type == "SHIPMENT",
+                )
+                .order_by(StockMovement.occurred_at.desc())
+                .limit(1)
+            )
+        ).scalar_one_or_none()
+        outputs.append(
+            InventoryBalanceOut(
+                product_id=product.id,
+                sku=product.sku,
+                name=product.name,
+                warehouse_id=None,
+                warehouse_code="ALL",
+                on_hand=on_hand,
+                reserved=reserved,
+                available=available_total,
+                version=sum((b.version for b, _, _ in product_rows), 0),
+                row_type="SKU",
+                default_location_code=default_location_code,
+                incoming=incoming,
+                expired_qty=expired_total,
+                projected=available_total + incoming,
+                health_status=health_status,
+                last_receipt_at=last_receipt.occurred_at if last_receipt else None,
+                last_shipment_at=last_shipment.occurred_at if last_shipment else None,
+            )
+        )
+        for balance, _, warehouse in product_rows:
+            expired_wh = await expired_lot_quantity(
+                db,
+                organization_id=user.organization_id,
+                product_id=product_key,
+                warehouse_id=str(balance.warehouse_id),
+            )
+            wh_receipt = (
+                await db.execute(
+                    select(StockMovement)
+                    .where(
+                        StockMovement.organization_id == uuid.UUID(user.organization_id),
+                        StockMovement.product_id == product.id,
+                        StockMovement.warehouse_id == balance.warehouse_id,
+                        StockMovement.movement_type == "RECEIPT",
+                    )
+                    .order_by(StockMovement.occurred_at.desc())
+                    .limit(1)
+                )
+            ).scalar_one_or_none()
+            wh_shipment = (
+                await db.execute(
+                    select(StockMovement)
+                    .where(
+                        StockMovement.organization_id == uuid.UUID(user.organization_id),
+                        StockMovement.product_id == product.id,
+                        StockMovement.warehouse_id == balance.warehouse_id,
+                        StockMovement.movement_type == "SHIPMENT",
+                    )
+                    .order_by(StockMovement.occurred_at.desc())
+                    .limit(1)
+                )
+            ).scalar_one_or_none()
+            wh_available = max(
+                balance.on_hand - balance.reserved - expired_wh, Decimal("0")
+            )
+            outputs.append(
+                InventoryBalanceOut(
+                    product_id=product.id,
+                    sku=product.sku,
+                    name=product.name,
+                    warehouse_id=balance.warehouse_id,
+                    warehouse_code=warehouse.code,
+                    on_hand=balance.on_hand,
+                    reserved=balance.reserved,
+                    available=wh_available,
+                    version=balance.version,
+                    row_type="WAREHOUSE",
+                    default_location_code=default_location_code,
+                    incoming=Decimal("0"),
+                    expired_qty=expired_wh,
+                    projected=wh_available,
+                    health_status=health_status,
+                    last_receipt_at=wh_receipt.occurred_at if wh_receipt else None,
+                    last_shipment_at=wh_shipment.occurred_at if wh_shipment else None,
+                )
+            )
     return outputs
 
 
@@ -257,6 +321,7 @@ async def get_inventory(
         reserved=reserved,
         available=available,
         version=version,
+        row_type="SKU",
         incoming=incoming,
         expired_qty=expired_qty,
         projected=available + incoming,

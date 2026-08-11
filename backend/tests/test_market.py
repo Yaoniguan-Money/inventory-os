@@ -281,7 +281,7 @@ async def test_product_overview_has_due_7d_and_trends(
     data = overview.json()
     assert Decimal(data["inventory"]["due_7d"]) == Decimal("30")
     assert len(data["trends"]["on_hand"]) >= 1
-    assert len(data["trends"]["available"]) >= 1
+    assert len(data["trends"]["available_projected"]) >= 1
     assert len(data["trends"]["weighted_avg_cost"]) >= 1
     assert len(data["trends"]["market_buy_domestic"]) >= 1
     assert data["trends"]["market_buy_domestic"][0]["source"]

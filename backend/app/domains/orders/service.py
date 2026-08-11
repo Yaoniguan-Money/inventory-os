@@ -268,7 +268,15 @@ async def confirm_order(
             product_id=str(line.product_id),
             default_warehouse_id=str(default_warehouse.id),
         )
-        total_available = sum((b.on_hand - b.reserved for b in balances), Decimal("0"))
+        total_available = Decimal("0")
+        for balance in balances:
+            expired = await expired_lot_quantity(
+                db,
+                organization_id=organization_id,
+                product_id=str(line.product_id),
+                warehouse_id=str(balance.warehouse_id),
+            )
+            total_available += balance.on_hand - balance.reserved - expired
         if total_available < line.ordered_qty:
             incoming = await _incoming_before(
                 db,
@@ -307,7 +315,13 @@ async def confirm_order(
         for balance in balances:
             if remaining <= 0:
                 break
-            available = balance.on_hand - balance.reserved
+            expired = await expired_lot_quantity(
+                db,
+                organization_id=organization_id,
+                product_id=str(line.product_id),
+                warehouse_id=str(balance.warehouse_id),
+            )
+            available = balance.on_hand - balance.reserved - expired
             allocation = min(available, remaining)
             if allocation <= 0:
                 continue

@@ -236,6 +236,29 @@
 - 新增 11 项回归测试；E2E 新增智能出入库故事（扫码识别 → 确认入库 → 库存增加）。
 - 当前后端测试 90 项全通过，前端构建/测试与 2 条 E2E 全部通过。
 
+## 第六轮审计修复（并发 / 过期与预留三套真相 / 工作台口径 / 前端联动 / 语义收尾）
+
+- P0 Health 并发：`inventory_alerts` 增加 `(org, product, alert_type) WHERE status='OPEN'` 部分唯一索引，
+  `_upsert_alert` 改为 SAVEPOINT + IntegrityError 重取，GET 并发重算不再 MultipleResultsFound/500（并发测试 3 连发均 200）。
+- P0 确认订单不可预留过期库存：confirm 校验与分配均扣除每仓过期量；只有过期库存时确认被拒。
+- P0 预留覆盖三套真相统一：Health / Dashboard / 订单详情 / Workbench 的预留覆盖一律以“可售（未过期）库存”为上限，
+  预留实物过期后重新打开 STOCKOUT_RISK 与 ORDER_FULFILLMENT_RISK（回归测试覆盖）。
+- P0 工作台缺口口径：`shortage_7d` 改为 `unreserved_due - available - incoming`，不再重复扣已预留需求。
+- P0 采购页“全部到货”：前端带 `lines` body 调用 receive；E2E 核心故事新增该按钮回归（不再 422）。
+- P1 多仓列表语义：`/inventory` 返回 SKU 汇总行（`row_type=SKU`，携带全局 incoming/projected/health）
+  与各仓库行（`row_type=WAREHOUSE`，只含本仓 available/expired/projected），不再把全局 Incoming 叠加到每行。
+- P1 Market Mapping 校验商品组织归属（跨企业商品 404）。
+- P1 目标售价清空：PATCH `target_sell_price: null` 写入 `CLEARED` 快照，`get_prices` 视为无目标价，消除双真相。
+- P1 默认仓库/库位一致性：两者必须同仓；更新仓库时联动校验旧库位（409）。
+- P1 Adjust 同步批次：盘亏按 FIFO 扣减 Lot 并逐 Lot 记流水，盘盈新建 ADJ Lot，Balance 与 Lot 不再分叉。
+- P1 Lot 并发：`(org, product, warehouse, lot_code)` 唯一约束 + SAVEPOINT 重取；并发同批号入库仅产生一个 Lot；
+  `get_balance_locked` 同样加并发保护。
+- P1 AI 工具口径：库存 Tool 扣除过期量（含 `expired_qty`），市场 Tool 携带 `unit/basis`（FX 不再在 AI 层丢失）。
+- P1 Dashboard：ATP 池改用全量在途（长订单可用 8 日后到货），市场异常旁路遵守 UOM/FX 可比规则。
+- P2 集成事件支持 `expires_at`；`image_data_url` 限制 8MB（前后端）；Available 趋势更名为 `available_projected`
+  并在 UI 注明“按当前预留推算”，不再冒充历史 Available。
+- 新增 15 项回归测试；当前后端测试 105 项全通过，前端构建/测试与 2 条 E2E 通过。
+
 ## Definition of Done 核对
 
 - [x] private repo 创建：https://github.com/Yaoniguan-Money/inventory-os
@@ -259,7 +282,7 @@
 - [x] 采购中心统一视图（库存/在途/需求/历史采购价/供应商/行情）
 - [x] ForecastProvider / capability / API 存在且 disabled；UI 无伪预测
 - [x] 未实现面向客户客服助手
-- [x] 权限测试、核心库存/订单测试通过（pytest 90 项，含跨租户/权限绕过/批次边界/成本快照/多仓库/API Key scope/AI Tool scope/健康公式/跨仓预留/过期批次/ATP/实体归属回归）
+- [x] 权限测试、核心库存/订单测试通过（pytest 105 项，含跨租户/权限绕过/批次边界/成本快照/多仓库/API Key scope/AI Tool scope/健康公式/跨仓预留/过期批次/ATP/实体归属/并发/预留覆盖回归）
 - [x] Playwright 核心链路通过
 - [x] CI 工作流已配置；本地等价检查（ruff/mypy/pytest/build/typecheck/lint/test）全绿，推送后由 GitHub Actions 验证
 - [x] docs/PROGRESS.md 处于最终完成状态

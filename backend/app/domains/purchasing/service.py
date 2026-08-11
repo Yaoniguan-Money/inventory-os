@@ -425,6 +425,13 @@ async def workbench(db: AsyncSession, *, organization_id: str) -> list[dict]:
             )
         ).scalars().all()
         demand = sum((line.ordered_qty - line.delivered_qty for line in demand_lines), Decimal("0"))
+        sellable_pool = max(on_hand - expired_qty, Decimal("0"))
+        reserved_covered = Decimal("0")
+        for line in demand_lines:
+            covered = min(line.reserved_qty, sellable_pool)
+            sellable_pool -= covered
+            reserved_covered += covered
+        unreserved_due = max(demand - reserved_covered, Decimal("0"))
         last_purchase = await latest_snapshot(
             db, organization_id=organization_id, product_id=pid, price_type="LAST_PURCHASE_PRICE"
         )
@@ -460,7 +467,9 @@ async def workbench(db: AsyncSession, *, organization_id: str) -> list[dict]:
                 "projected": available + incoming,
                 "incoming": incoming,
                 "demand_7d": demand,
-                "shortage_7d": max(demand - available - incoming, Decimal("0")),
+                "reserved_for_due": reserved_covered,
+                "unreserved_due": unreserved_due,
+                "shortage_7d": max(unreserved_due - available - incoming, Decimal("0")),
                 "last_purchase_price": last_purchase.price if last_purchase else None,
                 "weighted_avg_cost": avg_cost.price if avg_cost else None,
                 "market_quotes": market_quotes,

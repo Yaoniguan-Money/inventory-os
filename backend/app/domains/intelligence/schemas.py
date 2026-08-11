@@ -33,7 +33,7 @@ class ChatResponse(BaseModel):
 class ResolveProductRequest(BaseModel):
     barcode: str | None = Field(default=None, max_length=128)
     text: str | None = Field(default=None, max_length=500)
-    image_data_url: str | None = None
+    image_data_url: str | None = Field(default=None, max_length=8_000_000)
 
 
 class ResolveCandidate(BaseModel):

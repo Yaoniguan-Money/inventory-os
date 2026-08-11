@@ -15,6 +15,7 @@ from app.domains.market.service import get_product_market
 from app.domains.pricing.service import get_prices
 from app.domains.purchasing.service import incoming_for_product
 from app.domains.warehouse.models import InventoryBalance
+from app.domains.warehouse.service import expired_lot_quantity
 from app.providers.ai import get_ai_provider
 
 
@@ -43,13 +44,17 @@ async def _query_inventory(db: AsyncSession, organization_id: str, product_id: s
     ).scalars().all()
     on_hand = sum((b.on_hand for b in balances), Decimal("0"))
     reserved = sum((b.reserved for b in balances), Decimal("0"))
+    expired = await expired_lot_quantity(
+        db, organization_id=organization_id, product_id=product_id
+    )
     incoming = await incoming_for_product(
         db, organization_id=organization_id, product_id=product_id
     )
     return {
         "on_hand": str(on_hand),
         "reserved": str(reserved),
-        "available": str(on_hand - reserved),
+        "expired_qty": str(expired),
+        "available": str(max(on_hand - reserved - expired, Decimal("0"))),
         "incoming": str(incoming),
     }
 
@@ -87,6 +92,8 @@ async def _query_market(db: AsyncSession, organization_id: str, product_id: str)
                 "price": str(q.price),
                 "currency": q.currency,
                 "source": q.source,
+                "unit": q.unit,
+                "basis": q.basis,
                 "observed_at": q.observed_at.isoformat(),
             }
             for q in market["quotes"]

@@ -56,7 +56,7 @@ interface Overview {
   }>
   trends: {
     on_hand: Array<{ date: string; value: string }>
-    available: Array<{ date: string; value: string }>
+    available_projected: Array<{ date: string; value: string }>
     weighted_avg_cost: Array<{ date: string; value: string }>
     last_purchase_price: Array<{ date: string; value: string }>
     actual_sell_price: Array<{ date: string; value: string }>
@@ -408,7 +408,11 @@ export default function ProductDetailPage() {
           <TrendChart
             series={[
               { name: 'On Hand', data: data.trends.on_hand, color: '#38bdf8' },
-              { name: 'Available', data: data.trends.available, color: '#34d399' },
+              {
+                name: 'Available（按当前预留推算）',
+                data: data.trends.available_projected,
+                color: '#34d399',
+              },
             ]}
           />
         </Card>

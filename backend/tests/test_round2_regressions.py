@@ -351,14 +351,16 @@ async def test_inventory_list_has_spec_columns(
     listing = await client.get("/api/v1/inventory", headers=org_owner_headers)
     assert listing.status_code == 200
     rows = [r for r in listing.json() if r["product_id"] == ids["product_id"]]
-    assert len(rows) == 2
-    for row in rows:
+    warehouse_rows = [r for r in rows if r["row_type"] == "WAREHOUSE"]
+    assert len(warehouse_rows) == 2
+    assert any(r["row_type"] == "SKU" for r in rows)
+    for row in warehouse_rows:
         assert "incoming" in row
         assert row["health_status"] in ("NORMAL", "WARN", "HIGH")
         assert "last_receipt_at" in row
         assert "last_shipment_at" in row
         assert "default_location_code" in row
-    assert any(row["last_receipt_at"] for row in rows)
+    assert any(row["last_receipt_at"] for row in warehouse_rows)
 
 
 async def test_order_filters_and_detail_risk_fields(

@@ -33,7 +33,7 @@ test('核心经营链路：登录→商品→订单→确认→交付→风险',
   await expect(confirmedRow.getByText('CONFIRMED')).toBeVisible()
 
   await page.getByRole('link', { name: '仓库中心' }).click()
-  const productRow = page.locator('tr', { hasText: 'A001 · 精密铝合金板材 6061' })
+  const productRow = page.locator('tr', { hasText: 'A001 · 精密铝合金板材 6061' }).first()
   await expect(productRow.getByRole('cell').nth(4)).toHaveText(/240/)
 
   // 5. 部分交付 → PARTIAL
@@ -52,4 +52,10 @@ test('核心经营链路：登录→商品→订单→确认→交付→风险',
   // 7. 库存风险（A003 临期批次 → EXPIRY_RISK；已预留订单不再误报缺货）
   await page.getByRole('link', { name: '风险中心' }).click()
   await expect(page.getByText('EXPIRY_RISK').first()).toBeVisible()
+
+  // 8. 采购页“全部到货”必须带 lines body，而不是 422。
+  await page.getByRole('link', { name: '采购中心' }).click()
+  const poRow = page.locator('tr', { hasText: 'PO-' }).first()
+  await poRow.getByRole('button', { name: '全部到货' }).click()
+  await expect(poRow.getByText('RECEIVED')).toBeVisible()
 })

@@ -50,6 +50,8 @@ async def _validate_default_locations(
         ).scalar_one_or_none()
         if location is None:
             raise NotFoundError("默认库位不存在或不属于当前组织")
+        if warehouse_id and location.warehouse_id != uuid.UUID(str(warehouse_id)):
+            raise ConflictError("默认库位不属于默认仓库")
 
 
 async def get_product(db: AsyncSession, *, organization_id: str, product_id: str) -> Product:
@@ -143,19 +145,13 @@ async def update_product(
     product = await get_product(db, organization_id=organization_id, product_id=product_id)
     before = {"name": product.name, "status": product.status, "target_sell_price": str(product.target_sell_price)}
     changes = payload.model_dump(exclude_unset=True)
+    effective_warehouse_id = changes.get("default_warehouse_id", product.default_warehouse_id)
+    effective_location_id = changes.get("default_location_id", product.default_location_id)
     await _validate_default_locations(
         db,
         organization_id=organization_id,
-        warehouse_id=(
-            str(changes["default_warehouse_id"])
-            if changes.get("default_warehouse_id") is not None
-            else None
-        ),
-        location_id=(
-            str(changes["default_location_id"])
-            if changes.get("default_location_id") is not None
-            else None
-        ),
+        warehouse_id=str(effective_warehouse_id) if effective_warehouse_id else None,
+        location_id=str(effective_location_id) if effective_location_id else None,
     )
     if "barcode" in changes and changes["barcode"]:
         dup = (
@@ -172,7 +168,19 @@ async def update_product(
     for field, value in changes.items():
         setattr(product, field, value)
     await db.flush()
-    if changes.get("target_sell_price") is not None:
+    if "target_sell_price" in changes and changes["target_sell_price"] is None:
+        record_price_snapshot(
+            db,
+            organization_id=organization_id,
+            product_id=str(product.id),
+            price_type="TARGET_SELL_PRICE",
+            price=Decimal("0"),
+            currency=product.currency,
+            source_reference_type="CLEARED",
+            source_reference_id=str(product.id),
+            effective_at=datetime.now(UTC),
+        )
+    elif changes.get("target_sell_price") is not None:
         record_price_snapshot(
             db,
             organization_id=organization_id,
@@ -203,7 +211,11 @@ async def update_product(
         aggregate_type="product",
         aggregate_id=str(product.id),
         payload={
-            key: (str(value) if isinstance(value, Decimal) else value)
+            key: (
+                str(value)
+                if isinstance(value, (Decimal, uuid.UUID))
+                else value
+            )
             for key, value in changes.items()
         },
     )

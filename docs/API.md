@@ -171,6 +171,15 @@ inventory.adjusted  -> inventory:adjust
 
 `Projected = Available + Incoming`，出现在单商品库存、库存列表、商品详情与采购工作台。
 
+## 库存列表语义
+
+`GET /api/v1/inventory` 每个 SKU 返回一条汇总行（`row_type=SKU`，含全局 Incoming/Health/Projected）
+ 与若干仓库行（`row_type=WAREHOUSE`，available/projected 仅含本仓、扣除本仓过期量）。
+
+## 商品识别
+
+`image_data_url` 上限 8MB；集成事件 `inventory.received` 支持 `lot_code` 与 `expires_at` 字段。
+
 > 请求/响应 schema 见 FastAPI `/docs`（OpenAPI）。当前实现以真实路由为准。
 
 ## Market Providers

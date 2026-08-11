@@ -112,8 +112,18 @@ export default function PurchasingPage() {
   })
 
   const actionMutation = useMutation({
-    mutationFn: ({ id, action }: { id: string; action: string }) =>
-      api.post(`/purchase-orders/${id}/${action}`),
+    mutationFn: ({ id, action }: { id: string; action: string }) => {
+      const body =
+        action === 'receive'
+          ? {
+              lines: (pos.data?.find((p) => p.id === id)?.lines ?? []).map((l) => ({
+                purchase_order_line_id: l.id,
+                quantity: l.incoming_qty,
+              })),
+            }
+          : undefined
+      return api.post(`/purchase-orders/${id}/${action}`, body)
+    },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['purchase-orders'] })
       queryClient.invalidateQueries({ queryKey: ['purchasing'] })

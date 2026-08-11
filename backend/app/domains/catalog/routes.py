@@ -303,7 +303,7 @@ async def product_overview(
         },
         "trends": {
             "on_hand": on_hand_trend,
-            "available": available_trend,
+            "available_projected": available_trend,
             "weighted_avg_cost": price_series["WEIGHTED_AVG_COST"],
             "last_purchase_price": price_series["LAST_PURCHASE_PRICE"],
             "actual_sell_price": price_series["ACTUAL_SELL_PRICE"],

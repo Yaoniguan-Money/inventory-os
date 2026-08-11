@@ -84,6 +84,8 @@ class WorkbenchItem(BaseModel):
     projected: Decimal = Decimal("0")
     incoming: Decimal
     demand_7d: Decimal
+    reserved_for_due: Decimal = Decimal("0")
+    unreserved_due: Decimal = Decimal("0")
     shortage_7d: Decimal
     last_purchase_price: Decimal | None
     weighted_avg_cost: Decimal | None
