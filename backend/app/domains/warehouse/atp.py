@@ -12,10 +12,13 @@ import uuid
 from datetime import UTC, datetime
 from decimal import Decimal
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.domains.orders.models import SalesOrder, SalesOrderLine
 from app.domains.purchasing.models import PurchaseOrder, PurchaseOrderLine
+from app.domains.warehouse.models import InventoryBalance
+from app.domains.warehouse.service import expired_lot_quantity
 
 _MAX = datetime.max.replace(tzinfo=UTC)
 
@@ -101,3 +104,128 @@ class IncomingAllocator:
 
     def allocate(self, deadline: datetime | None, need: Decimal) -> Decimal:
         return consume_buckets(self.buckets, deadline=deadline, need=need)
+
+
+async def simulate_product_allocation(
+    db: AsyncSession,
+    *,
+    organization_id: str,
+    product_id: str,
+    horizon: datetime | None = None,
+) -> list[dict]:
+    """按全局订单优先序模拟同一商品的供应分配。
+
+    排序与 Health / Dashboard 一致：有效截止时间（行级优先）升序，未设截止的最后；
+    预留覆盖以可售（未过期）库存为上限，并按同一顺序消费；在途按 ETA 时间桶逐笔消费。
+    返回每个订单行的 covered_reserved 与 allocated_incoming。
+    horizon 传入时只模拟截止在该时间之前的订单（Health 履约风险口径）；
+    不传时模拟全部 CONFIRMED/PARTIAL 剩余订单（Dashboard 与订单详情口径）。
+    """
+
+    stmt = (
+        select(SalesOrderLine, SalesOrder)
+        .join(SalesOrder, SalesOrder.id == SalesOrderLine.sales_order_id)
+        .where(
+            SalesOrder.organization_id == uuid.UUID(organization_id),
+            SalesOrderLine.product_id == uuid.UUID(product_id),
+            SalesOrder.status.in_(["CONFIRMED", "PARTIAL"]),
+        )
+    )
+    if horizon is not None:
+        stmt = stmt.where(
+            func.coalesce(SalesOrderLine.required_at, SalesOrder.required_at) <= horizon
+        )
+    rows = (await db.execute(stmt)).all()
+    items: list[dict] = []
+    for line, order in rows:
+        remaining = line.ordered_qty - line.delivered_qty
+        if remaining <= 0:
+            continue
+        items.append(
+            {
+                "line": line,
+                "order": order,
+                "remaining": remaining,
+            }
+        )
+    items.sort(
+        key=lambda item: (
+            (item["line"].required_at or item["order"].required_at) is None,
+            item["line"].required_at
+            or item["order"].required_at
+            or datetime.max.replace(tzinfo=UTC),
+        )
+    )
+
+    balances = (
+        await db.execute(
+            select(InventoryBalance).where(
+                InventoryBalance.organization_id == uuid.UUID(organization_id),
+                InventoryBalance.product_id == uuid.UUID(product_id),
+            )
+        )
+    ).scalars().all()
+    on_hand = sum((b.on_hand for b in balances), Decimal("0"))
+    expired = await expired_lot_quantity(
+        db, organization_id=organization_id, product_id=product_id
+    )
+    sellable_pool = max(on_hand - expired, Decimal("0"))
+    buckets = await build_buckets(db, organization_id=organization_id, product_id=product_id)
+    buckets_snapshot = [list(bucket) for bucket in buckets]
+
+    results: list[dict] = []
+    for item in items:
+        sales_line: SalesOrderLine = item["line"]
+        sales_order: SalesOrder = item["order"]
+        qty_remaining: Decimal = item["remaining"]
+        covered = min(sales_line.reserved_qty, sellable_pool)
+        sellable_pool -= covered
+        deadline = sales_line.required_at or sales_order.required_at
+        if deadline is None:
+            incoming_before_deadline = sum(
+                (qty for _, qty in buckets_snapshot), Decimal("0")
+            )
+        else:
+            incoming_before_deadline = sum(
+                (
+                    qty
+                    for eta, qty in buckets_snapshot
+                    if eta is not None and eta <= deadline
+                ),
+                Decimal("0"),
+            )
+        allocated = consume_buckets(
+            buckets,
+            deadline=deadline,
+            need=max(qty_remaining - covered, Decimal("0")),
+        )
+        results.append(
+            {
+                "line_id": str(sales_line.id),
+                "order_id": str(sales_order.id),
+                "order_no": sales_order.order_no,
+                "remaining": qty_remaining,
+                "covered_reserved": covered,
+                "incoming_before_deadline": incoming_before_deadline,
+                "allocated_incoming": allocated,
+                "deadline": deadline,
+            }
+        )
+    return results
+
+
+async def allocation_for_line(
+    db: AsyncSession,
+    *,
+    organization_id: str,
+    product_id: str,
+    sales_order_line_id: str,
+) -> dict | None:
+    """返回指定订单行在全局优先序中的实际分配结果（不在分配列表中时返回 None）。"""
+
+    for item in await simulate_product_allocation(
+        db, organization_id=organization_id, product_id=product_id
+    ):
+        if item["line_id"] == sales_order_line_id:
+            return item
+    return None

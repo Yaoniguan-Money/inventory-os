@@ -4,7 +4,7 @@ import uuid
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 
-from sqlalchemy import func, select
+from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -14,9 +14,8 @@ from app.core.events import record_event
 from app.domains.catalog.models import Product
 from app.domains.health.models import InventoryAlert
 from app.domains.market.models import MarketQuote
-from app.domains.orders.models import SalesOrder, SalesOrderLine
 from app.domains.pricing.models import InternalPriceSnapshot
-from app.domains.warehouse.atp import IncomingAllocator, incoming_before
+from app.domains.warehouse.atp import incoming_before, simulate_product_allocation
 from app.domains.warehouse.models import InventoryBalance, InventoryLot, StockMovement
 from app.domains.warehouse.service import expired_lot_quantity
 
@@ -158,61 +157,25 @@ async def recalculate_product(
 
     # 1) STOCKOUT_RISK: 只对“尚未被预留覆盖”的到期需求计算缺口。
     #    已确认订单的需求已体现在 reserved 中，不应再与 available 重复扣减。
-    demand_rows = (
-        await db.execute(
-            select(SalesOrderLine, SalesOrder)
-            .join(SalesOrder, SalesOrder.id == SalesOrderLine.sales_order_id)
-            .where(
-                SalesOrder.organization_id == org_uuid,
-                SalesOrderLine.product_id == product.id,
-                SalesOrder.status.in_(["CONFIRMED", "PARTIAL"]),
-                func.coalesce(SalesOrderLine.required_at, SalesOrder.required_at) <= horizon,
-            )
-        )
-    ).all()
-    due_demand = sum(
-        (line.ordered_qty - line.delivered_qty for line, _ in demand_rows), Decimal("0")
+    simulation = await simulate_product_allocation(
+        db, organization_id=organization_id, product_id=pid, horizon=horizon
     )
-    demand_sorted = sorted(
-        demand_rows,
-        key=lambda pair: (
-            (pair[0].required_at or pair[1].required_at) is None,
-            pair[0].required_at or pair[1].required_at or datetime.max.replace(tzinfo=UTC),
-        ),
-    )
-    # 预留覆盖只能以“可售（未过期）”库存为上限：预留背后实物过期后不能继续算被覆盖。
-    sellable_pool = max(on_hand - expired_qty, Decimal("0"))
-    reserved_covered_total = Decimal("0")
-    order_risks: list[dict] = []
-    allocator = await IncomingAllocator.build(
-        db, organization_id=organization_id, product_id=pid
-    )
-    for line, order in demand_sorted:
-        remaining = line.ordered_qty - line.delivered_qty
-        covered = min(line.reserved_qty, sellable_pool)
-        sellable_pool -= covered
-        reserved_covered_total += covered
-        deadline = line.required_at or order.required_at
-        incoming_for_line = await incoming_before(
-            db, organization_id=organization_id, product_id=pid, deadline=deadline
-        )
-        allocated_incoming = allocator.allocate(
-            deadline, max(remaining - covered, Decimal("0"))
-        )
-        if remaining > 0 and remaining > covered + allocated_incoming:
-            order_risks.append(
-                {
-                    "order_id": str(order.id),
-                    "order_no": order.order_no,
-                    "required_at": order.required_at.isoformat() if order.required_at else None,
-                    "remaining": str(remaining),
-                    "reserved": str(covered),
-                    "incoming_before_deadline": str(incoming_for_line),
-                    "allocated_incoming": str(allocated_incoming),
-                }
-            )
-    reserved_for_due = reserved_covered_total
+    due_demand = sum((item["remaining"] for item in simulation), Decimal("0"))
+    reserved_for_due = sum((item["covered_reserved"] for item in simulation), Decimal("0"))
     unreserved_due = max(due_demand - reserved_for_due, Decimal("0"))
+    order_risks = [
+        {
+            "order_id": item["order_id"],
+            "order_no": item["order_no"],
+            "required_at": item["deadline"].isoformat() if item["deadline"] else None,
+            "remaining": str(item["remaining"]),
+            "reserved": str(item["covered_reserved"]),
+            "incoming_before_deadline": str(item["incoming_before_deadline"]),
+            "allocated_incoming": str(item["allocated_incoming"]),
+        }
+        for item in simulation
+        if item["remaining"] > item["covered_reserved"] + item["allocated_incoming"]
+    ]
     incoming_before_due = await incoming_before(
         db, organization_id=organization_id, product_id=pid, deadline=horizon
     )

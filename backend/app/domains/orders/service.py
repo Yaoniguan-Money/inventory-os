@@ -23,7 +23,7 @@ from app.domains.orders.models import (
 )
 from app.domains.pricing.service import record_price_snapshot
 from app.domains.purchasing.models import PurchaseOrder, PurchaseOrderLine
-from app.domains.warehouse.atp import IncomingAllocator
+from app.domains.warehouse.atp import allocation_for_line
 from app.domains.warehouse.models import (
     InventoryBalance,
     InventoryLot,
@@ -135,12 +135,15 @@ async def build_order_out(db: AsyncSession, organization_id: str, order: SalesOr
         available = max(on_hand - reserved - expired, Decimal("0"))
         sellable = max(on_hand - expired, Decimal("0"))
         covered = min(line.reserved_qty, sellable)
-        deadline = line.required_at or order.required_at
         remaining = line.ordered_qty - line.delivered_qty
-        allocator = await IncomingAllocator.build(
-            db, organization_id=organization_id, product_id=str(line.product_id)
+        allocation = await allocation_for_line(
+            db,
+            organization_id=organization_id,
+            product_id=str(line.product_id),
+            sales_order_line_id=str(line.id),
         )
-        incoming = allocator.allocate(deadline, max(remaining - covered, Decimal("0")))
+        covered = allocation["covered_reserved"] if allocation else covered
+        incoming = allocation["allocated_incoming"] if allocation else Decimal("0")
         line_meta[str(line.id)] = {
             "available": available,
             "incoming": incoming,

@@ -294,6 +294,106 @@ async def test_order_detail_uses_allocated_incoming_share(
         assert Decimal(line["incoming"]) == Decimal("50")
 
 
+async def test_atp_global_priority_competition(
+    client: httpx.AsyncClient, org_owner_headers: dict[str, str]
+) -> None:
+    """两订单各 80、同一批在途 100：较早订单获 80，较晚订单仅获 20 并标风险。"""
+
+    ids = await _setup(client, org_owner_headers, sku="COMP-01")
+    await client.post(
+        "/api/v1/inventory/receive",
+        headers=org_owner_headers,
+        json={
+            "product_id": ids["product_id"],
+            "warehouse_id": ids["wh1"],
+            "quantity": "160",
+            "unit_cost": "80.00",
+        },
+    )
+    customer = await client.post(
+        "/api/v1/customers",
+        headers=org_owner_headers,
+        json={"code": f"C-{uuid.uuid4().hex[:8]}", "name": "竞争客户"},
+    )
+    now = datetime.now(UTC)
+    earlier = await client.post(
+        "/api/v1/orders",
+        headers=org_owner_headers,
+        json={
+            "customer_id": customer.json()["id"],
+            "lines": [{"product_id": ids["product_id"], "ordered_qty": "80"}],
+            "required_at": (now + timedelta(days=3)).isoformat(),
+        },
+    )
+    later = await client.post(
+        "/api/v1/orders",
+        headers=org_owner_headers,
+        json={
+            "customer_id": customer.json()["id"],
+            "lines": [{"product_id": ids["product_id"], "ordered_qty": "80"}],
+            "required_at": (now + timedelta(days=5)).isoformat(),
+        },
+    )
+    for order in (earlier, later):
+        await client.post(f"/api/v1/orders/{order.json()['id']}/confirm", headers=org_owner_headers)
+    await _po(
+        client, org_owner_headers, ids["product_id"], "100",
+        expected_at=(now + timedelta(days=2)).isoformat(),
+    )
+    async with new_session() as db:
+        for order in (earlier, later):
+            line = (
+                await db.execute(
+                    select(SalesOrderLine).where(
+                        SalesOrderLine.sales_order_id == order.json()["id"]
+                    )
+                )
+            ).scalar_one()
+            line.reserved_qty = Decimal("0")
+            for reservation in (
+                await db.execute(
+                    select(InventoryReservation).where(
+                        InventoryReservation.sales_order_line_id == line.id,
+                        InventoryReservation.status == "ACTIVE",
+                    )
+                )
+            ).scalars():
+                balance = (
+                    await db.execute(
+                        select(InventoryBalance).where(
+                            InventoryBalance.warehouse_id == reservation.warehouse_id,
+                            InventoryBalance.product_id == line.product_id,
+                        )
+                    )
+                ).scalar_one()
+                balance.reserved -= reservation.quantity
+                reservation.status = "RELEASED"
+                reservation.quantity = Decimal("0")
+        await db.commit()
+
+    dashboard = await client.get("/api/v1/dashboard", headers=org_owner_headers)
+    assert dashboard.json()["at_risk_orders"] == 1
+    early_detail = await client.get(
+        f"/api/v1/orders/{earlier.json()['id']}", headers=org_owner_headers
+    )
+    early_line = early_detail.json()["lines"][0]
+    assert Decimal(early_line["incoming"]) == Decimal("80")
+    assert early_line["fulfillment_risk"] is False
+    late_detail = await client.get(
+        f"/api/v1/orders/{later.json()['id']}", headers=org_owner_headers
+    )
+    late_line = late_detail.json()["lines"][0]
+    assert Decimal(late_line["incoming"]) == Decimal("20")
+    assert late_line["fulfillment_risk"] is True
+    health = await client.get(
+        f"/api/v1/products/{ids['product_id']}/health", headers=org_owner_headers
+    )
+    fulfillment = next(
+        a for a in health.json()["alerts"] if a["alert_type"] == "ORDER_FULFILLMENT_RISK"
+    )
+    assert len(fulfillment["evidence_json"]["orders"]) == 1
+
+
 async def _org_wh(client: httpx.AsyncClient, headers: dict[str, str]) -> str:
     resp = await client.post(
         "/api/v1/warehouses", headers=headers, json={"code": "WH-OTHER", "name": "另一仓库"}

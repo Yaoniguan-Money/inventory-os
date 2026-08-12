@@ -289,6 +289,23 @@
   订单详情 `incoming` 改为“可分配份额”（按自身缺口逐桶认领），不再把同一批在途全额算给单个订单。
 - 新增 3 项回归测试；当前后端测试 117 项全通过，前端构建/测试与 2 条 E2E 通过。
 
+## 第九轮（全局优先序分配模拟 / Order Detail 竞争语义）
+
+- 新增 `simulate_product_allocation(...)`：按全局订单优先序（行级截止日期升序、未设截止最后）
+  模拟同一商品的供应分配；预留覆盖以可售（未过期）库存排队消费，在途按 ETA 时间桶逐笔扣减，
+  同一批在途只能被分配一次。
+- 新增 `allocation_for_line(...)` 接口：返回指定订单行在全局模拟中的实际 allocated supply，
+  不在分配列表中时返回 None。
+- Order Detail 不再自建独立 ATP 池：`build_order_out` 改用 `allocation_for_line`，
+  与 Health / Dashboard 使用同一订单排序与同一供应分配语义。
+- Health / Dashboard 删除本地重复的 demand_sorted / allocator / sellable_pool 循环，
+  统一走 `simulate_product_allocation`；Health 告警 evidence 保留
+  `incoming_before_deadline` 与 `allocated_incoming` 字段。
+- 新增真实竞争回归测试：两订单各 80、同一批在途 100 → 较早订单分得 80（无风险），
+  较晚订单仅分得 20 并标记 ORDER_FULFILLMENT_RISK；Dashboard at_risk=1、Health evidence 仅 1 单。
+- 当前后端测试 117 项全通过（本轮新增 1 项；上一轮文档计数含 1 项偏差，实际 116→117），
+  前端构建/测试与 2 条 E2E 由 CI 验证。
+
 ## Definition of Done 核对
 
 - [x] private repo 创建：https://github.com/Yaoniguan-Money/inventory-os
@@ -312,7 +329,7 @@
 - [x] 采购中心统一视图（库存/在途/需求/历史采购价/供应商/行情）
 - [x] ForecastProvider / capability / API 存在且 disabled；UI 无伪预测
 - [x] 未实现面向客户客服助手
-- [x] 权限测试、核心库存/订单测试通过（pytest 117 项，含跨租户/权限绕过/批次边界/成本快照/多仓库/API Key scope/AI Tool scope/健康公式/跨仓预留/过期批次/ATP/实体归属/并发/预留覆盖/时间桶 ATP/币种一致性/PO 关联入库/未知 ETA 回归）
+- [x] 权限测试、核心库存/订单测试通过（pytest 117 项，含跨租户/权限绕过/批次边界/成本快照/多仓库/API Key scope/AI Tool scope/健康公式/跨仓预留/过期批次/ATP/实体归属/并发/预留覆盖/时间桶 ATP/币种一致性/PO 关联入库/未知 ETA/全局优先序分配与竞争场景回归）
 - [x] Playwright 核心链路通过
 - [x] CI 工作流已配置；本地等价检查（ruff/mypy/pytest/build/typecheck/lint/test）全绿，推送后由 GitHub Actions 验证
 - [x] docs/PROGRESS.md 处于最终完成状态

@@ -4,7 +4,7 @@ import uuid
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 
-from sqlalchemy import func, select
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.domains.catalog.models import Product
@@ -13,7 +13,7 @@ from app.domains.integrations.models import EventLog
 from app.domains.market.models import MarketQuote
 from app.domains.orders.models import Customer, SalesOrder, SalesOrderLine
 from app.domains.pricing.models import InternalPriceSnapshot
-from app.domains.warehouse.atp import IncomingAllocator, incoming_before
+from app.domains.warehouse.atp import incoming_before, simulate_product_allocation
 from app.domains.warehouse.models import InventoryBalance
 from app.domains.warehouse.service import expired_lot_quantity
 
@@ -90,7 +90,6 @@ async def dashboard(db: AsyncSession, *, organization_id: str) -> dict:
         )
     ).all()
     order_rows: list[tuple] = []
-    due_lines: list[tuple[SalesOrderLine, SalesOrder]] = []
     for order, customer in orders:
         lines = (
             await db.execute(
@@ -105,8 +104,6 @@ async def dashboard(db: AsyncSession, *, organization_id: str) -> dict:
         for line in lines:
             remaining = line.ordered_qty - line.delivered_qty
             remaining_total += remaining
-            if remaining > 0:
-                due_lines.append((line, order))
         order_rows.append((order, customer, effective_due, remaining_total))
 
     orders_due = sum(
@@ -114,40 +111,15 @@ async def dashboard(db: AsyncSession, *, organization_id: str) -> dict:
         if effective_due is not None and effective_due <= horizon
     )
 
-    # ATP：incoming 池使用全量在途（不再只装 7 日），预留覆盖以可售库存为上限。
-    allocators: dict[str, IncomingAllocator] = {}
-    sellable_pools: dict[str, Decimal] = {}
+    # ATP：按全局订单优先序模拟同一商品的供应分配（与 Health / 订单详情同语义）。
     risky_order_ids: set[str] = set()
-    sorted_due_lines = sorted(
-        due_lines,
-        key=lambda pair: (
-            (pair[0].required_at or pair[1].required_at) is None,
-            pair[0].required_at or pair[1].required_at or datetime.max.replace(tzinfo=UTC),
-        ),
-    )
-    for line, order in sorted_due_lines:
-        product_id = str(line.product_id)
-        if product_id not in allocators:
-            allocators[product_id] = await IncomingAllocator.build(
-                db, organization_id=organization_id, product_id=product_id
-            )
-            balances = by_product.get(product_id, [])
-            expired = await expired_lot_quantity(
-                db, organization_id=organization_id, product_id=product_id
-            )
-            sellable_pools[product_id] = max(
-                sum((b.on_hand for b in balances), Decimal("0")) - expired,
-                Decimal("0"),
-            )
-        deadline = line.required_at or order.required_at
-        covered = min(line.reserved_qty, sellable_pools[product_id])
-        sellable_pools[product_id] -= covered
-        remaining = line.ordered_qty - line.delivered_qty
-        allocated = allocators[product_id].allocate(
-            deadline, max(remaining - covered, Decimal("0"))
+    for product in products:
+        simulation = await simulate_product_allocation(
+            db, organization_id=organization_id, product_id=str(product.id)
         )
-        if remaining > covered + allocated:
-            risky_order_ids.add(str(order.id))
+        for item in simulation:
+            if item["remaining"] > item["covered_reserved"] + item["allocated_incoming"]:
+                risky_order_ids.add(item["order_id"])
     at_risk_orders = len(risky_order_ids)
 
     upcoming: list[dict] = []
@@ -180,37 +152,13 @@ async def dashboard(db: AsyncSession, *, organization_id: str) -> dict:
             sum((b.on_hand - b.reserved for b in product_balances), Decimal("0")) - expired_qty,
             Decimal("0"),
         )
-        demand_rows = (
-            await db.execute(
-                select(SalesOrderLine, SalesOrder)
-                .join(SalesOrder, SalesOrder.id == SalesOrderLine.sales_order_id)
-                .where(
-                    SalesOrder.organization_id == org_uuid,
-                    SalesOrderLine.product_id == product.id,
-                    SalesOrder.status.in_(["CONFIRMED", "PARTIAL"]),
-                    func.coalesce(SalesOrderLine.required_at, SalesOrder.required_at) <= horizon,
-                )
-            )
-        ).all()
-        due_demand = sum(
-            (line.ordered_qty - line.delivered_qty for line, _ in demand_rows), Decimal("0")
+        simulation = await simulate_product_allocation(
+            db, organization_id=organization_id, product_id=str(product.id), horizon=horizon
         )
-        demand_sorted = sorted(
-            demand_rows,
-            key=lambda pair: (
-                (pair[0].required_at or pair[1].required_at) is None,
-                pair[0].required_at or pair[1].required_at or datetime.max.replace(tzinfo=UTC),
-            ),
+        due_demand = sum((item["remaining"] for item in simulation), Decimal("0"))
+        reserved_for_due = sum(
+            (item["covered_reserved"] for item in simulation), Decimal("0")
         )
-        sellable_pool = max(
-            sum((b.on_hand for b in product_balances), Decimal("0")) - expired_qty,
-            Decimal("0"),
-        )
-        reserved_for_due = Decimal("0")
-        for line, _ in demand_sorted:
-            covered = min(line.reserved_qty, sellable_pool)
-            sellable_pool -= covered
-            reserved_for_due += covered
         unreserved_due = max(due_demand - reserved_for_due, Decimal("0"))
         incoming = await incoming_before(
             db, organization_id=organization_id, product_id=str(product.id), deadline=horizon
